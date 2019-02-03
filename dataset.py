@@ -10,23 +10,43 @@ def paired_collate_fn(insts):
     tgt_insts = collate_fn(tgt_insts)
     return (*src_insts, *tgt_insts)
 
-def collate_fn(insts):
-    ''' Pad the instance to the max seq length in batch '''
+def openie_collate_fn(insts):
+    word_insts, tag_insts = list(zip(*insts))
+    return (*collate_fn(word_insts), collate_fn(tag_insts, get_pos=False))
 
+def collate_fn(insts, get_pos=True):
+    ''' Pad the instance to the max seq length in batch '''
     max_len = max(len(inst) for inst in insts)
+    # get the size of one element
+    # a element could be either a list of integers or an integer
+    ele_size = None
+    for inst in insts:
+        if len(inst) == 0:
+            continue
+        ele_size = inst[0]
+        if hasattr(ele_size, '__len__'):
+            ele_size = len(ele_size)
+            if ele_size == 0:
+                raise ValueError('empty element')
+        else:
+            ele_size = 0
+        break
+    if ele_size is None:
+        raise ValueError('all instances are empty')
 
     batch_seq = np.array([
-        inst + [Constants.PAD] * (max_len - len(inst))
+        inst + [[Constants.PAD] * ele_size or Constants.PAD] * (max_len - len(inst))
         for inst in insts])
-
-    batch_pos = np.array([
-        [pos_i+1 if w_i != Constants.PAD else 0
-         for pos_i, w_i in enumerate(inst)] for inst in batch_seq])
-
     batch_seq = torch.LongTensor(batch_seq)
-    batch_pos = torch.LongTensor(batch_pos)
 
-    return batch_seq, batch_pos
+    if get_pos:
+        batch_pos = np.array([
+            [pos_i+1 if (w_i[0] if ele_size else w_i) != Constants.PAD else 0
+             for pos_i, w_i in enumerate(inst)] for inst in batch_seq]) # the first element is word
+        batch_pos = torch.LongTensor(batch_pos)
+        return batch_seq, batch_pos
+
+    return batch_seq
 
 class TranslationDataset(torch.utils.data.Dataset):
     def __init__(
@@ -88,3 +108,43 @@ class TranslationDataset(torch.utils.data.Dataset):
         if self._tgt_insts:
             return self._src_insts[idx], self._tgt_insts[idx]
         return self._src_insts[idx]
+
+class OpenIEDataset(torch.utils.data.Dataset):
+    def __init__(
+        self, word2idx, word_insts=None, tag_insts=None):
+
+        assert word_insts
+        assert tag_insts
+
+        idx2word = {idx:word for word, idx in word2idx.items()}
+        self._word2idx = word2idx
+        self._idx2word = idx2word
+        self._word_insts = word_insts
+        self._tag_insts = tag_insts
+
+    @property
+    def n_insts(self):
+        ''' Property for dataset size '''
+        return len(self._word_insts)
+
+    @property
+    def vocab_size(self):
+        ''' Property for vocab size '''
+        return len(self._word2idx)
+
+    @property
+    def word2idx(self):
+        ''' Property for word dictionary '''
+        return self._word2idx
+
+    @property
+    def idx2word(self):
+        ''' Property for index dictionary '''
+        return self._idx2word
+
+    def __len__(self):
+        return self.n_insts
+
+    def __getitem__(self, idx):
+        # return word seq and tag seq separately
+        return self._word_insts[idx], self._tag_insts[idx]

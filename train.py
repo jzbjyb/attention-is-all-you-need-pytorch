@@ -5,16 +5,19 @@ This script handling the training process.
 import argparse
 import math
 import time
+import contextlib
 
 from tqdm import tqdm
+import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
 import torch.utils.data
 import transformer.Constants as Constants
-from dataset import TranslationDataset, paired_collate_fn
-from transformer.Models import Transformer
+from dataset import TranslationDataset, OpenIEDataset, paired_collate_fn, openie_collate_fn
+from transformer.Models import Transformer, TransformerTagger, count_parameters
 from transformer.Optim import ScheduledOptim
+from preprocess import WordVector
 
 def cal_performance(pred, gold, smoothing=False):
     ''' Apply label smoothing if needed '''
@@ -24,8 +27,8 @@ def cal_performance(pred, gold, smoothing=False):
     pred = pred.max(1)[1]
     gold = gold.contiguous().view(-1)
     non_pad_mask = gold.ne(Constants.PAD)
-    n_correct = pred.eq(gold)
-    n_correct = n_correct.masked_select(non_pad_mask).sum().item()
+    correct_mask = pred.eq(gold)
+    n_correct = correct_mask.masked_select(non_pad_mask).sum().item()
 
     return loss, n_correct
 
@@ -51,6 +54,61 @@ def cal_loss(pred, gold, smoothing):
 
     return loss
 
+
+def one_epoch(model, data, optimizer, device, smoothing, opt, is_train=False):
+    if is_train:
+        model.train()
+        desc = '  - (Training)   '
+    else:
+        model.eval()
+        desc = '  - (Validation)   '
+
+    total_loss = 0
+    n_word_total = 0
+    n_word_correct = 0
+
+    with contextlib.nullcontext() if is_train else torch.no_grad():
+        for batch in tqdm(data, mininterval=2, desc=desc, leave=False):
+            # prepare data
+            if opt.task == 'mt':
+                src_seq, src_pos, tgt_seq, tgt_pos = map(lambda x: x.to(device), batch)
+                gold = tgt_seq[:, 1:]
+            elif opt.task == 'openie':
+                word_seq, pos_seq, tag_seq = map(lambda x: x.to(device), batch)
+                gold = tag_seq
+            else:
+                raise ValueError
+
+            # forward
+            if is_train:
+                optimizer.zero_grad()
+            if opt.task == 'mt':
+                pred = model(src_seq, src_pos, tgt_seq, tgt_pos)
+            elif opt.task == 'openie':
+                pred = model(word_seq, pos_seq)
+            else:
+                raise ValueError
+
+            # backward
+            loss, n_correct = cal_performance(pred, gold, smoothing=smoothing)
+            if is_train:
+                loss.backward()
+
+            # update parameters
+            if is_train:
+                optimizer.step_and_update_lr()
+
+            # note keeping
+            total_loss += loss.item()
+
+            non_pad_mask = gold.ne(Constants.PAD)
+            n_word = non_pad_mask.sum().item()
+            n_word_total += n_word
+            n_word_correct += n_correct
+
+    loss_per_word = total_loss / n_word_total
+    accuracy = n_word_correct / n_word_total
+    return loss_per_word, accuracy
 
 def train_epoch(model, training_data, optimizer, device, smoothing):
     ''' Epoch operation in training phase'''
@@ -148,15 +206,18 @@ def train(model, training_data, validation_data, optimizer, device, opt):
         print('[ Epoch', epoch_i, ']')
 
         start = time.time()
-        train_loss, train_accu = train_epoch(
-            model, training_data, optimizer, device, smoothing=opt.label_smoothing)
+        train_loss, train_accu = one_epoch(
+            model, training_data, optimizer, device, smoothing=opt.label_smoothing,
+            opt=opt, is_train=True)
         print('  - (Training)   ppl: {ppl: 8.5f}, accuracy: {accu:3.3f} %, '\
               'elapse: {elapse:3.3f} min'.format(
                   ppl=math.exp(min(train_loss, 100)), accu=100*train_accu,
                   elapse=(time.time()-start)/60))
 
         start = time.time()
-        valid_loss, valid_accu = eval_epoch(model, validation_data, device)
+        valid_loss, valid_accu = one_epoch(
+            model, validation_data, optimizer, device, smoothing=opt.label_smoothing,
+            opt=opt, is_train=False)
         print('  - (Validation) ppl: {ppl: 8.5f}, accuracy: {accu:3.3f} %, '\
                 'elapse: {elapse:3.3f} min'.format(
                     ppl=math.exp(min(valid_loss, 100)), accu=100*valid_accu,
@@ -194,6 +255,7 @@ def main():
     parser = argparse.ArgumentParser()
 
     parser.add_argument('-data', required=True)
+    parser.add_argument('-emb', type=str, default=None)
 
     parser.add_argument('-epoch', type=int, default=10)
     parser.add_argument('-batch_size', type=int, default=64)
@@ -219,6 +281,8 @@ def main():
     parser.add_argument('-no_cuda', action='store_true')
     parser.add_argument('-label_smoothing', action='store_true')
 
+    parser.add_argument('-task', type=str, choices=['mt', 'openie'], default='mt')
+
     opt = parser.parse_args()
     opt.cuda = not opt.no_cuda
     opt.d_word_vec = opt.d_model
@@ -227,33 +291,61 @@ def main():
     data = torch.load(opt.data)
     opt.max_token_seq_len = data['settings'].max_token_seq_len
 
-    training_data, validation_data = prepare_dataloaders(data, opt)
-
-    opt.src_vocab_size = training_data.dataset.src_vocab_size
-    opt.tgt_vocab_size = training_data.dataset.tgt_vocab_size
-
-    #========= Preparing Model =========#
-    if opt.embs_share_weight:
-        assert training_data.dataset.src_word2idx == training_data.dataset.tgt_word2idx, \
-            'The src/tgt word2idx table are different but asked to share word embedding.'
+    if opt.task == 'mt':
+        training_data, validation_data = prepare_dataloaders(data, opt)
+        opt.src_vocab_size = training_data.dataset.src_vocab_size
+        opt.tgt_vocab_size = training_data.dataset.tgt_vocab_size
+        if opt.embs_share_weight:
+            assert training_data.dataset.src_word2idx == training_data.dataset.tgt_word2idx, \
+                'The src/tgt word2idx table are different but asked to share word embedding.'
+    elif opt.task == 'openie':
+        training_data, validation_data = prepare_dataloaders_openie(data, opt)
+        opt.vocab_size = training_data.dataset.vocab_size
+        opt.n_class = data['settings'].n_class
+    else:
+        raise ValueError
 
     print(opt)
 
     device = torch.device('cuda' if opt.cuda else 'cpu')
-    transformer = Transformer(
-        opt.src_vocab_size,
-        opt.tgt_vocab_size,
-        opt.max_token_seq_len,
-        tgt_emb_prj_weight_sharing=opt.proj_share_weight,
-        emb_src_tgt_weight_sharing=opt.embs_share_weight,
-        d_k=opt.d_k,
-        d_v=opt.d_v,
-        d_model=opt.d_model,
-        d_word_vec=opt.d_word_vec,
-        d_inner=opt.d_inner_hid,
-        n_layers=opt.n_layers,
-        n_head=opt.n_head,
-        dropout=opt.dropout).to(device)
+    if opt.task == 'mt':
+        transformer = Transformer(
+            opt.src_vocab_size,
+            opt.tgt_vocab_size,
+            opt.max_token_seq_len,
+            tgt_emb_prj_weight_sharing=opt.proj_share_weight,
+            emb_src_tgt_weight_sharing=opt.embs_share_weight,
+            d_k=opt.d_k,
+            d_v=opt.d_v,
+            d_model=opt.d_model,
+            d_word_vec=opt.d_word_vec,
+            d_inner=opt.d_inner_hid,
+            n_layers=opt.n_layers,
+            n_head=opt.n_head,
+            dropout=opt.dropout).to(device)
+    elif opt.task == 'openie':
+        word_emb = None
+        emb_dim = opt.d_word_vec // 2
+        if opt.emb:
+            word_emb = WordVector(opt.emb, is_binary=False, first_line=True, initializer='uniform').get_vectors()
+            emb_dim = word_emb.shape[1]
+            print('[Info] Use pretrained embedding with dim {}'.format(emb_dim))
+        transformer = TransformerTagger(
+            [opt.vocab_size, 2], # one for token, one for predicate indicator
+            opt.n_class,
+            opt.max_token_seq_len,
+            d_vec_list=[emb_dim, opt.d_word_vec - emb_dim],
+            pre_emb_list=[word_emb, None],
+            emb_learnable_list=[False, True],
+            d_model=opt.d_model,
+            d_inner=opt.d_inner_hid,
+            n_layers=opt.n_layers,
+            n_head=opt.n_head,
+            d_k=opt.d_k,
+            d_v=opt.d_v,
+            dropout=opt.dropout).to(device)
+    else:
+        raise ValueError
 
     optimizer = ScheduledOptim(
         optim.Adam(
@@ -261,6 +353,7 @@ def main():
             betas=(0.9, 0.98), eps=1e-09),
         opt.d_model, opt.n_warmup_steps)
 
+    print('[Info] #parameters: {}'.format(count_parameters(transformer)))
     train(transformer, training_data, validation_data, optimizer, device ,opt)
 
 
@@ -288,6 +381,27 @@ def prepare_dataloaders(data, opt):
         collate_fn=paired_collate_fn)
     return train_loader, valid_loader
 
+def prepare_dataloaders_openie(data, opt):
+    # ========= Preparing DataLoader =========#
+    train_loader = torch.utils.data.DataLoader(
+        OpenIEDataset(
+            word2idx=data['dict'],
+            word_insts=data['train']['word'],
+            tag_insts=data['train']['tag']),
+        num_workers=2,
+        batch_size=opt.batch_size,
+        collate_fn=openie_collate_fn,
+        shuffle=True)
+
+    valid_loader = torch.utils.data.DataLoader(
+        OpenIEDataset(
+            word2idx=data['dict'],
+            word_insts=data['valid']['word'],
+            tag_insts=data['valid']['tag']),
+        num_workers=2,
+        batch_size=opt.batch_size,
+        collate_fn=openie_collate_fn)
+    return train_loader, valid_loader
 
 if __name__ == '__main__':
     main()

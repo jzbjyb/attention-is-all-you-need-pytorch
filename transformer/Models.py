@@ -7,6 +7,9 @@ from transformer.Layers import EncoderLayer, DecoderLayer
 
 __author__ = "Yu-Hsiang Huang"
 
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
 def get_non_pad_mask(seq):
     assert seq.dim() == 2
     return seq.ne(Constants.PAD).type(torch.float).unsqueeze(-1)
@@ -86,6 +89,76 @@ class Encoder(nn.Module):
         # -- Forward
         enc_output = self.src_word_emb(src_seq) + self.position_enc(src_pos)
 
+        for enc_layer in self.layer_stack:
+            enc_output, enc_slf_attn = enc_layer(
+                enc_output,
+                non_pad_mask=non_pad_mask,
+                slf_attn_mask=slf_attn_mask)
+            if return_attns:
+                enc_slf_attn_list += [enc_slf_attn]
+
+        if return_attns:
+            return enc_output, enc_slf_attn_list
+        return enc_output,
+
+class MultiInpEncoder(nn.Module):
+    ''' A encoder model with self attention mechanism. '''
+
+    def __init__(
+            self,
+            n_cate_list, len_max_seq, d_vec_list, pre_emb_list, emb_learnable_list,
+            n_layers, n_head, d_k, d_v, d_model, d_inner, dropout=0.1):
+
+        super().__init__()
+
+        assert len(pre_emb_list) == len(n_cate_list) \
+            and len(pre_emb_list) == len(d_vec_list) \
+            and len(pre_emb_list) == len(emb_learnable_list), \
+            'Number of elements should be the same.'
+
+        n_position = len_max_seq + 1
+
+        d_inp = np.sum(d_vec_list) # all the input embeddings are concatenated
+        assert d_model == d_inp, \
+            'To facilitate the residual connections, \
+             the dimensions of all module outputs shall be the same.'
+
+        self.word_emb_list = nn.ModuleList([
+            nn.Embedding(n_cate, d_vec, padding_idx=Constants.PAD) if emb is None \
+                else nn.Embedding.from_pretrained(torch.FloatTensor(emb))
+            for n_cate, d_vec, emb in
+            zip(n_cate_list, d_vec_list, pre_emb_list)])
+
+        for i, emb in enumerate(self.word_emb_list):
+            emb.weight.requires_grad = emb_learnable_list[i]
+
+        self.position_enc = nn.Embedding.from_pretrained(
+            get_sinusoid_encoding_table(n_position, d_inp, padding_idx=0),
+            freeze=True)
+
+        self.layer_stack = nn.ModuleList([
+            EncoderLayer(d_model, d_inner, n_head, d_k, d_v, dropout=dropout)
+            for _ in range(n_layers)])
+
+    def forward(self, word_seqs, pos_seq, return_attns=False):
+
+        enc_slf_attn_list = []
+
+        # -- Split inputs
+        word_seqs = [torch.squeeze(c, dim=-1) for c in
+            torch.chunk(word_seqs, word_seqs.size(-1), dim=-1)]
+
+        # -- Prepare masks
+        # the first inp is always tokens
+        slf_attn_mask = get_attn_key_pad_mask(seq_k=word_seqs[0], seq_q=word_seqs[0])
+        non_pad_mask = get_non_pad_mask(word_seqs[0])
+
+        # -- Embedding
+        enc_output = [emb(word_seq) for word_seq, emb in zip(word_seqs, self.word_emb_list)]
+        enc_output = torch.cat(enc_output, dim=-1)
+        enc_output += self.position_enc(pos_seq)
+
+        # -- Forward
         for enc_layer in self.layer_stack:
             enc_output, enc_slf_attn = enc_layer(
                 enc_output,
@@ -206,3 +279,33 @@ class Transformer(nn.Module):
         seq_logit = self.tgt_word_prj(dec_output) * self.x_logit_scale
 
         return seq_logit.view(-1, seq_logit.size(2))
+
+class TransformerTagger(nn.Module):
+    ''' A sequence tagging model. '''
+
+    def __init__(
+            self,
+            n_cate_list, n_class, len_max_seq, d_vec_list,
+            pre_emb_list, emb_learnable_list,
+            d_model=512, d_inner=2048, n_layers=6,
+            n_head=8, d_k=64, d_v=64, dropout=0.1):
+
+        super().__init__()
+
+        self.encoder = MultiInpEncoder(
+            n_cate_list=n_cate_list, len_max_seq=len_max_seq,
+            d_vec_list=d_vec_list, pre_emb_list=pre_emb_list,
+            emb_learnable_list=emb_learnable_list,
+            d_model=d_model,d_inner=d_inner, n_layers=n_layers,
+            n_head=n_head, d_k=d_k, d_v=d_v, dropout=dropout)
+
+
+        self.word_prj = nn.Linear(d_model, n_class, bias=False)
+        nn.init.xavier_normal_(self.word_prj.weight)
+
+    def forward(self, inps, pos):
+
+        enc_output, *_ = self.encoder(inps, pos)
+        tag_logit = self.word_prj(enc_output)
+
+        return tag_logit.view(-1, tag_logit.size(2))
