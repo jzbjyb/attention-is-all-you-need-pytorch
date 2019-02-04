@@ -1,11 +1,39 @@
 ''' Handling the data io '''
 import argparse
+import re
 import torch
 import transformer.Constants as Constants
 import pandas as pd
 import numpy as np
 from sklearn.decomposition import TruncatedSVD
 from operator import itemgetter
+import spacy
+from spacy.tokens import Doc
+
+class WhitespaceTokenizer(object):
+    def __init__(self, nlp):
+        self.vocab = nlp.vocab
+
+    def __call__(self, text):
+        words = re.split(r' +', text) # Allow arbitrary number of spaces
+        # All tokens 'own' a subsequent space character in this tokenizer
+        spaces = [True] * len(words)
+        return Doc(self.vocab, words=words, spaces=spaces)
+
+class SpacyParser(object):
+    #nlp = spacy.load('en_core_web_sm', create_make_doc=WhitespaceTokenizer) # python2.7
+    nlp = spacy.load('en_core_web_sm')
+
+    @staticmethod
+    def parse_sent(sent):
+        ''' Parse a sentence (str) '''
+        return SpacyParser.nlp(sent)
+
+    @staticmethod
+    def parse_tokens(tokens):
+        ''' Parse a token list '''
+        tokens =  SpacyParser.nlp.tokenizer.tokens_from_list(tokens)
+        return SpacyParser.nlp.tagger(tokens)
 
 def load_word_vector(filepath, is_binary=False, first_line=True):
     if is_binary:
@@ -123,23 +151,30 @@ def read_instances_from_file(inst_file, max_sent_len, keep_case):
 
     return word_insts
 
-def read_instances_from_conll_csv(inst_file, max_sent_len, keep_case):
+def read_instances_from_conll_csv(inst_file, max_sent_len, keep_case, get_pos=True):
     ''' Convert conll file (in csv format) into word seq lists and tag seq lists '''
     df = pd.read_csv(inst_file, sep='\t', header=0, keep_default_na=False, quoting=3)
 
     # Split according to sentences
     sents = [df[df.run_id == run_id] for run_id in sorted(set(df.run_id.values))]
 
-    word_insts, pred_insts, tag_insts = [], [], []
+    word_insts, pred_insts, pos_insts, tag_insts = [], [], [], []
     trimmed_sent_count = 0
     useless_sent_count = 0
     for sent in sents:
+        raw_tokens = sent.word.values.tolist()
+        if get_pos:
+            pos_inst = [t.tag_ for t in SpacyParser.parse_tokens(raw_tokens)]
+            assert len(pos_inst) == len(sent.word.values), \
+                'part-of-speech tagging results should be of the same length as word sequence'
         word_inst = [w if keep_case else w.lower() for w in sent.word.values]
         if len(word_inst) <= 0:
             continue
         if len(word_inst) > max_sent_len:
             trimmed_sent_count += 1
         word_inst = word_inst[:max_sent_len]
+        if get_pos:
+            pos_inst = pos_inst[:max_sent_len]
         pred = sent.head_pred_id.values[0]
         if pred >= len(word_inst):
             useless_sent_count += 1
@@ -149,6 +184,8 @@ def read_instances_from_conll_csv(inst_file, max_sent_len, keep_case):
         tag_inst = sent.label.values[:max_sent_len].tolist()
         word_insts.append(word_inst)
         pred_insts.append(pred_inst)
+        if get_pos:
+            pos_insts.append(pos_inst)
         tag_insts.append(tag_inst)
 
     print('[Info] Get {} instances from {}'.format(len(word_insts), inst_file))
@@ -160,8 +197,9 @@ def read_instances_from_conll_csv(inst_file, max_sent_len, keep_case):
         print('[Warning] {} instances are useless under the max sentence length {}.'
               .format(useless_sent_count, max_sent_len))
 
+    if get_pos:
+        return word_insts, pred_insts, pos_insts, tag_insts
     return word_insts, pred_insts, tag_insts
-
 
 def build_vocab_idx(word_insts, min_word_count, word2idx=None):
     ''' Trim vocab by number of occurence '''
@@ -177,14 +215,14 @@ def build_vocab_idx(word_insts, min_word_count, word2idx=None):
             Constants.PAD_WORD: Constants.PAD,
             Constants.UNK_WORD: Constants.UNK}
 
-    word_count = {w: 0 for w in full_vocab}
+    word2count = {w: 0 for w in full_vocab}
 
     for sent in word_insts:
         for word in sent:
-            word_count[word] += 1
+            word2count[word] += 1
 
     ignored_word_count = 0
-    for word, count in sorted(word_count.items(), key=lambda x: -x[1]):
+    for word, count in sorted(word2count.items(), key=lambda x: -x[1]):
         if word not in word2idx:
             if count > min_word_count:
                 word2idx[word] = len(word2idx)
@@ -194,11 +232,13 @@ def build_vocab_idx(word_insts, min_word_count, word2idx=None):
     print('[Info] Trimmed vocabulary size = {},'.format(len(word2idx)),
           'each with minimum occurrence = {}'.format(min_word_count))
     print("[Info] Ignored word count = {}".format(ignored_word_count))
-    return word2idx
+    return word2idx, word2count
 
 def convert_instance_to_idx_seq(word_insts, word2idx):
     ''' Mapping words to idx sequence. '''
     return [[word2idx.get(w, Constants.UNK) for w in s] for s in word_insts]
+
+concat_inp = lambda *x: [list(zip(*inst)) for inst in zip(*x)]
 
 def main_mt(opt):
     ''' Main function for MT '''
@@ -247,14 +287,14 @@ def main_mt(opt):
     else:
         if opt.share_vocab:
             print('[Info] Build shared vocabulary for source and target.')
-            word2idx = build_vocab_idx(
+            word2idx, _ = build_vocab_idx(
                 train_src_word_insts + train_tgt_word_insts, opt.min_word_count)
             src_word2idx = tgt_word2idx = word2idx
         else:
             print('[Info] Build vocabulary for source.')
-            src_word2idx = build_vocab_idx(train_src_word_insts, opt.min_word_count)
+            src_word2idx, _ = build_vocab_idx(train_src_word_insts, opt.min_word_count)
             print('[Info] Build vocabulary for target.')
-            tgt_word2idx = build_vocab_idx(train_tgt_word_insts, opt.min_word_count)
+            tgt_word2idx, _ = build_vocab_idx(train_tgt_word_insts, opt.min_word_count)
 
     # word to index
     print('[Info] Convert source word instances into sequences of word index.')
@@ -286,12 +326,12 @@ def main_openie(opt):
     opt.max_token_seq_len = opt.max_word_seq_len # no need to include special tokens
 
     # Training set
-    train_word_insts, train_pred_insts, train_tag_insts = \
-        read_instances_from_conll_csv(opt.train_src, opt.max_word_seq_len, opt.keep_case)
+    train_word_insts, train_pred_insts, train_pos_insts, train_tag_insts = \
+        read_instances_from_conll_csv(opt.train_src, opt.max_word_seq_len, opt.keep_case, get_pos=opt.get_pos)
 
     # Validation set
-    valid_word_insts, valid_pred_insts, valid_tag_insts = \
-        read_instances_from_conll_csv(opt.valid_src, opt.max_word_seq_len, opt.keep_case)
+    valid_word_insts, valid_pred_insts, valid_pos_insts, valid_tag_insts = \
+        read_instances_from_conll_csv(opt.valid_src, opt.max_word_seq_len, opt.keep_case, get_pos=opt.get_pos)
 
     # Build vocabulary
     if opt.vocab:
@@ -301,18 +341,32 @@ def main_openie(opt):
         print('[Info] Pre-defined vocabulary found with {} tokens.'.format(len(word2idx)))
     else:
         print('[Info] Build vocabulary.')
-        word2idx = build_vocab_idx(train_word_insts, opt.min_word_count)
+        word2idx, _ = build_vocab_idx(train_word_insts, opt.min_word_count)
+
+    # Build POS vocabulary
+    print('[Info] POS vocabulary.')
+    pos2idx, _ = build_vocab_idx(train_pos_insts, 0,
+                              word2idx={
+                                  Constants.PAD_WORD: Constants.PAD,
+                                  Constants.UNK_WORD: Constants.UNK})
+    print('[Info] POS:')
+    print(sorted(pos2idx.items(), key=lambda x: x[1]))
+    opt.n_pos = len(pos2idx)
 
     # Build tag classes
     # use PAD to mask out paddings or irrelevant subwords in BERT
     # use UNK to represent unseen classes
     print('[Info] Build classes.')
-    tag2idx = build_vocab_idx(train_tag_insts, 0,
+    tag2idx, tag2count = build_vocab_idx(train_tag_insts, 0,
                               word2idx={
                                   Constants.PAD_WORD: Constants.PAD,
                                   Constants.UNK_WORD: Constants.UNK})
-    print(['[Info] Classes:'])
+    print('[Info] Classes and counts:')
     print(sorted(tag2idx.items(), key=lambda x: x[1]))
+    tc = sorted(tag2count.items(), key=lambda x: -x[1])
+    print(tc)
+    print('[Info] most common tag {} takes {}'.format(
+        tc[0][0], tc[0][1] / np.sum(list(map(itemgetter(1), tc)))))
     opt.n_class = len(tag2idx)
 
     # word to index
@@ -320,21 +374,27 @@ def main_openie(opt):
     train_word_insts = convert_instance_to_idx_seq(train_word_insts, word2idx)
     valid_word_insts = convert_instance_to_idx_seq(valid_word_insts, word2idx)
 
+    # pos to index
+    print('[Info] Convert pos instances into sequences of pos index.')
+    train_pos_insts = convert_instance_to_idx_seq(train_pos_insts, pos2idx)
+    valid_pos_insts = convert_instance_to_idx_seq(valid_pos_insts, pos2idx)
+
     # tag to index
     print('[Info] Convert tag instances into sequences of tag index.')
     train_tag_insts = convert_instance_to_idx_seq(train_tag_insts, tag2idx)
     valid_tag_insts = convert_instance_to_idx_seq(valid_tag_insts, tag2idx)
 
     # concatenate multiple word-related inputs
-    concat_inp = lambda *x: [list(zip(*inst)) for inst in zip(*x)]
     data = {
         'settings': opt,
-        'dict': word2idx,
+        'word2idx': word2idx,
+        'pos2idx': pos2idx,
+        'tag2idx': tag2idx,
         'train': {
-            'word': concat_inp(train_word_insts, train_pred_insts),
+            'word': concat_inp(train_word_insts, train_pos_insts, train_pred_insts),
             'tag': train_tag_insts},
         'valid': {
-            'word': concat_inp(valid_word_insts, valid_pred_insts),
+            'word': concat_inp(valid_word_insts, valid_pos_insts, valid_pred_insts),
             'tag': valid_tag_insts}}
 
     print('[Info] Dumping the processed data to pickle file', opt.save_data)
@@ -380,6 +440,7 @@ if __name__ == '__main__':
     if opt.task == 'mt':
         main_mt(opt)
     elif opt.task == 'openie':
+        opt.get_pos = True
         main_openie(opt)
     elif opt.task == 'emb':
         emb(opt)

@@ -308,4 +308,4 @@ class TransformerTagger(nn.Module):
         enc_output, *_ = self.encoder(inps, pos)
         tag_logit = self.word_prj(enc_output)
 
-        return tag_logit.view(-1, tag_logit.size(2))
+        return tag_logit

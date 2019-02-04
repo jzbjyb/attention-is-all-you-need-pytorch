@@ -10,9 +10,12 @@ def paired_collate_fn(insts):
     tgt_insts = collate_fn(tgt_insts)
     return (*src_insts, *tgt_insts)
 
-def openie_collate_fn(insts):
+def openie_paired_collate_fn(insts):
     word_insts, tag_insts = list(zip(*insts))
     return (*collate_fn(word_insts), collate_fn(tag_insts, get_pos=False))
+
+def openie_collate_fn(insts):
+    return (*collate_fn(insts), )
 
 def collate_fn(insts, get_pos=True):
     ''' Pad the instance to the max seq length in batch '''
@@ -111,14 +114,16 @@ class TranslationDataset(torch.utils.data.Dataset):
 
 class OpenIEDataset(torch.utils.data.Dataset):
     def __init__(
-        self, word2idx, word_insts=None, tag_insts=None):
+        self, word2idx, tag2idx, word_insts=None, tag_insts=None):
 
         assert word_insts
-        assert tag_insts
 
         idx2word = {idx:word for word, idx in word2idx.items()}
+        idx2tag = {idx:tag for tag, idx in tag2idx.items()}
         self._word2idx = word2idx
         self._idx2word = idx2word
+        self._tag2idx = tag2idx
+        self._idx2tag = idx2tag
         self._word_insts = word_insts
         self._tag_insts = tag_insts
 
@@ -142,9 +147,21 @@ class OpenIEDataset(torch.utils.data.Dataset):
         ''' Property for index dictionary '''
         return self._idx2word
 
+    @property
+    def tag2idx(self):
+        ''' Property for word dictionary '''
+        return self._tag2idx
+
+    @property
+    def idx2tag(self):
+        ''' Property for index dictionary '''
+        return self._idx2tag
+
     def __len__(self):
         return self.n_insts
 
     def __getitem__(self, idx):
         # return word seq and tag seq separately
-        return self._word_insts[idx], self._tag_insts[idx]
+        if self._tag_insts:
+            return self._word_insts[idx], self._tag_insts[idx]
+        return self._word_insts[idx]

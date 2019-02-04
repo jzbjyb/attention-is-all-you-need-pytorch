@@ -14,7 +14,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 import torch.utils.data
 import transformer.Constants as Constants
-from dataset import TranslationDataset, OpenIEDataset, paired_collate_fn, openie_collate_fn
+from dataset import TranslationDataset, OpenIEDataset, paired_collate_fn, openie_paired_collate_fn
 from transformer.Models import Transformer, TransformerTagger, count_parameters
 from transformer.Optim import ScheduledOptim
 from preprocess import WordVector
@@ -29,8 +29,9 @@ def cal_performance(pred, gold, smoothing=False):
     non_pad_mask = gold.ne(Constants.PAD)
     correct_mask = pred.eq(gold)
     n_correct = correct_mask.masked_select(non_pad_mask).sum().item()
+    correct_pred = pred.masked_select(correct_mask & non_pad_mask)
 
-    return loss, n_correct
+    return loss, n_correct, correct_pred
 
 
 def cal_loss(pred, gold, smoothing):
@@ -54,6 +55,9 @@ def cal_loss(pred, gold, smoothing):
 
     return loss
 
+def tag_stat(tags):
+    tags = tags.cpu().numpy()
+    print(np.array(np.unique(tags, return_counts=True)).T)
 
 def one_epoch(model, data, optimizer, device, smoothing, opt, is_train=False):
     if is_train:
@@ -86,11 +90,12 @@ def one_epoch(model, data, optimizer, device, smoothing, opt, is_train=False):
                 pred = model(src_seq, src_pos, tgt_seq, tgt_pos)
             elif opt.task == 'openie':
                 pred = model(word_seq, pos_seq)
+                pred = pred.view(-1, pred.size(2)) # flatten
             else:
                 raise ValueError
 
             # backward
-            loss, n_correct = cal_performance(pred, gold, smoothing=smoothing)
+            loss, n_correct, correct_pred = cal_performance(pred, gold, smoothing=smoothing)
             if is_train:
                 loss.backward()
 
@@ -108,80 +113,7 @@ def one_epoch(model, data, optimizer, device, smoothing, opt, is_train=False):
 
     loss_per_word = total_loss / n_word_total
     accuracy = n_word_correct / n_word_total
-    return loss_per_word, accuracy
-
-def train_epoch(model, training_data, optimizer, device, smoothing):
-    ''' Epoch operation in training phase'''
-
-    model.train()
-
-    total_loss = 0
-    n_word_total = 0
-    n_word_correct = 0
-
-    for batch in tqdm(
-            training_data, mininterval=2,
-            desc='  - (Training)   ', leave=False):
-
-        # prepare data
-        src_seq, src_pos, tgt_seq, tgt_pos = map(lambda x: x.to(device), batch)
-        gold = tgt_seq[:, 1:]
-
-        # forward
-        optimizer.zero_grad()
-        pred = model(src_seq, src_pos, tgt_seq, tgt_pos)
-
-        # backward
-        loss, n_correct = cal_performance(pred, gold, smoothing=smoothing)
-        loss.backward()
-
-        # update parameters
-        optimizer.step_and_update_lr()
-
-        # note keeping
-        total_loss += loss.item()
-
-        non_pad_mask = gold.ne(Constants.PAD)
-        n_word = non_pad_mask.sum().item()
-        n_word_total += n_word
-        n_word_correct += n_correct
-
-    loss_per_word = total_loss/n_word_total
-    accuracy = n_word_correct/n_word_total
-    return loss_per_word, accuracy
-
-def eval_epoch(model, validation_data, device):
-    ''' Epoch operation in evaluation phase '''
-
-    model.eval()
-
-    total_loss = 0
-    n_word_total = 0
-    n_word_correct = 0
-
-    with torch.no_grad():
-        for batch in tqdm(
-                validation_data, mininterval=2,
-                desc='  - (Validation) ', leave=False):
-
-            # prepare data
-            src_seq, src_pos, tgt_seq, tgt_pos = map(lambda x: x.to(device), batch)
-            gold = tgt_seq[:, 1:]
-
-            # forward
-            pred = model(src_seq, src_pos, tgt_seq, tgt_pos)
-            loss, n_correct = cal_performance(pred, gold, smoothing=False)
-
-            # note keeping
-            total_loss += loss.item()
-
-            non_pad_mask = gold.ne(Constants.PAD)
-            n_word = non_pad_mask.sum().item()
-            n_word_total += n_word
-            n_word_correct += n_correct
-
-    loss_per_word = total_loss/n_word_total
-    accuracy = n_word_correct/n_word_total
+    tag_stat(correct_pred)
     return loss_per_word, accuracy
 
 def train(model, training_data, validation_data, optimizer, device, opt):
@@ -260,7 +192,9 @@ def main():
     parser.add_argument('-epoch', type=int, default=10)
     parser.add_argument('-batch_size', type=int, default=64)
 
-    #parser.add_argument('-d_word_vec', type=int, default=512)
+    # used when we have multiple inputs (token, pos, pred in openie)
+    parser.add_argument('-d_word_vec', type=str, default=None)
+
     parser.add_argument('-d_model', type=int, default=512)
     parser.add_argument('-d_inner_hid', type=int, default=2048)
     parser.add_argument('-d_k', type=int, default=64)
@@ -285,7 +219,6 @@ def main():
 
     opt = parser.parse_args()
     opt.cuda = not opt.no_cuda
-    opt.d_word_vec = opt.d_model
 
     #========= Loading Dataset =========#
     data = torch.load(opt.data)
@@ -302,6 +235,7 @@ def main():
         training_data, validation_data = prepare_dataloaders_openie(data, opt)
         opt.vocab_size = training_data.dataset.vocab_size
         opt.n_class = data['settings'].n_class
+        opt.n_pos = data['settings'].n_pos
     else:
         raise ValueError
 
@@ -309,6 +243,7 @@ def main():
 
     device = torch.device('cuda' if opt.cuda else 'cpu')
     if opt.task == 'mt':
+        opt.d_word_vec = opt.d_model
         transformer = Transformer(
             opt.src_vocab_size,
             opt.tgt_vocab_size,
@@ -325,18 +260,33 @@ def main():
             dropout=opt.dropout).to(device)
     elif opt.task == 'openie':
         word_emb = None
-        emb_dim = opt.d_word_vec // 2
         if opt.emb:
             word_emb = WordVector(opt.emb, is_binary=False, first_line=True, initializer='uniform').get_vectors()
-            emb_dim = word_emb.shape[1]
-            print('[Info] Use pretrained embedding with dim {}'.format(emb_dim))
+            print('[Info] Use pretrained embedding with dim {}'.format(word_emb.shape[1]))
+        # get dimensions
+        if opt.d_word_vec:
+            opt.d_vec_list = list(map(int, opt.d_word_vec.split(':')))
+            assert opt.emb is None or (d_vec_list[0] == word_emb.shape[1]), \
+                'word vec dimension is not consistent'
+        else:
+            opt.d_word_vec = opt.d_model
+            emb_dim = word_emb.shape[1] if word_emb is not None else opt.d_word_vec // 3
+            pos_dim = opt.d_word_vec // 3
+            pred_dim = opt.d_word_vec - emb_dim - pos_dim
+            opt.d_vec_list = [emb_dim, pos_dim, pred_dim]
+        print('[Info] input embedding dims: {}'.format(opt.d_vec_list))
+        for d in opt.d_vec_list:
+            assert d >= 0, 'negative dimension'
+        opt.n_cate_list = [opt.vocab_size, opt.n_pos, 2]
+        opt.emb_learnable_list = [False, True, True]
+        opt.pre_emb_list = [word_emb, None, None]
         transformer = TransformerTagger(
-            [opt.vocab_size, 2], # one for token, one for predicate indicator
+            opt.n_cate_list,
             opt.n_class,
             opt.max_token_seq_len,
-            d_vec_list=[emb_dim, opt.d_word_vec - emb_dim],
-            pre_emb_list=[word_emb, None],
-            emb_learnable_list=[False, True],
+            d_vec_list=opt.d_vec_list,
+            pre_emb_list=opt.pre_emb_list,
+            emb_learnable_list=opt.emb_learnable_list,
             d_model=opt.d_model,
             d_inner=opt.d_inner_hid,
             n_layers=opt.n_layers,
@@ -385,22 +335,24 @@ def prepare_dataloaders_openie(data, opt):
     # ========= Preparing DataLoader =========#
     train_loader = torch.utils.data.DataLoader(
         OpenIEDataset(
-            word2idx=data['dict'],
+            word2idx=data['word2idx'],
+            tag2idx=data['tag2idx'],
             word_insts=data['train']['word'],
             tag_insts=data['train']['tag']),
         num_workers=2,
         batch_size=opt.batch_size,
-        collate_fn=openie_collate_fn,
+        collate_fn=openie_paired_collate_fn,
         shuffle=True)
 
     valid_loader = torch.utils.data.DataLoader(
         OpenIEDataset(
-            word2idx=data['dict'],
+            word2idx=data['word2idx'],
+            tag2idx=data['tag2idx'],
             word_insts=data['valid']['word'],
             tag_insts=data['valid']['tag']),
         num_workers=2,
         batch_size=opt.batch_size,
-        collate_fn=openie_collate_fn)
+        collate_fn=openie_paired_collate_fn)
     return train_loader, valid_loader
 
 if __name__ == '__main__':
