@@ -113,8 +113,7 @@ def one_epoch(model, data, optimizer, device, smoothing, opt, is_train=False):
 
     loss_per_word = total_loss / n_word_total
     accuracy = n_word_correct / n_word_total
-    tag_stat(correct_pred)
-    return loss_per_word, accuracy
+    return loss_per_word, accuracy, correct_pred
 
 def train(model, training_data, validation_data, optimizer, device, opt):
     ''' Start training '''
@@ -138,21 +137,25 @@ def train(model, training_data, validation_data, optimizer, device, opt):
         print('[ Epoch', epoch_i, ']')
 
         start = time.time()
-        train_loss, train_accu = one_epoch(
+        train_nll, train_accu, train_corr_pred = one_epoch(
             model, training_data, optimizer, device, smoothing=opt.label_smoothing,
             opt=opt, is_train=True)
-        print('  - (Training)   ppl: {ppl: 8.5f}, accuracy: {accu:3.3f} %, '\
+        train_ppl = math.exp(min(train_nll, 100))
+        print('  - (Training) nll: {nll: 8.5f}, ppl: {ppl: 8.5f}, accuracy: {accu:3.3f} %, '\
               'elapse: {elapse:3.3f} min'.format(
-                  ppl=math.exp(min(train_loss, 100)), accu=100*train_accu,
+                  nll=train_nll, ppl=train_ppl, accu=100*train_accu,
                   elapse=(time.time()-start)/60))
+        if epoch_i % 10 == 0:
+            tag_stat(train_corr_pred)
 
         start = time.time()
-        valid_loss, valid_accu = one_epoch(
+        valid_nll, valid_accu, valid_corr_pred = one_epoch(
             model, validation_data, optimizer, device, smoothing=opt.label_smoothing,
             opt=opt, is_train=False)
-        print('  - (Validation) ppl: {ppl: 8.5f}, accuracy: {accu:3.3f} %, '\
+        valid_ppl = math.exp(min(valid_nll, 100))
+        print('  - (Validation) nll: {nll: 8.5f}, ppl: {ppl: 8.5f}, accuracy: {accu:3.3f} %, '\
                 'elapse: {elapse:3.3f} min'.format(
-                    ppl=math.exp(min(valid_loss, 100)), accu=100*valid_accu,
+                    nll=valid_nll, ppl=valid_ppl, accu=100*valid_accu,
                     elapse=(time.time()-start)/60))
 
         valid_accus += [valid_accu]
@@ -175,12 +178,10 @@ def train(model, training_data, validation_data, optimizer, device, opt):
 
         if log_train_file and log_valid_file:
             with open(log_train_file, 'a') as log_tf, open(log_valid_file, 'a') as log_vf:
-                log_tf.write('{epoch},{loss: 8.5f},{ppl: 8.5f},{accu:3.3f}\n'.format(
-                    epoch=epoch_i, loss=train_loss,
-                    ppl=math.exp(min(train_loss, 100)), accu=100*train_accu))
-                log_vf.write('{epoch},{loss: 8.5f},{ppl: 8.5f},{accu:3.3f}\n'.format(
-                    epoch=epoch_i, loss=valid_loss,
-                    ppl=math.exp(min(valid_loss, 100)), accu=100*valid_accu))
+                log_tf.write('{epoch},{nll: 8.5f},{ppl: 8.5f},{accu:3.3f}\n'.format(
+                    epoch=epoch_i, nll=train_nll, ppl=train_ppl, accu=100*train_accu))
+                log_vf.write('{epoch},{nll: 8.5f},{ppl: 8.5f},{accu:3.3f}\n'.format(
+                    epoch=epoch_i, nll=valid_nll, ppl=valid_ppl, accu=100*valid_accu))
 
 def main():
     ''' Main function '''
@@ -264,28 +265,37 @@ def main():
             word_emb = WordVector(opt.emb, is_binary=False, first_line=True, initializer='uniform').get_vectors()
             print('[Info] Use pretrained embedding with dim {}'.format(word_emb.shape[1]))
         # get dimensions
+        # word, pos, pred_idx, pred_word, pred_pos
         if opt.d_word_vec:
             opt.d_vec_list = list(map(int, opt.d_word_vec.split(':')))
-            assert opt.emb is None or (d_vec_list[0] == word_emb.shape[1]), \
+            assert opt.emb is None or (opt.d_vec_list[0] == word_emb.shape[1]), \
                 'word vec dimension is not consistent'
         else:
             opt.d_word_vec = opt.d_model
-            emb_dim = word_emb.shape[1] if word_emb is not None else opt.d_word_vec // 3
-            pos_dim = opt.d_word_vec // 3
-            pred_dim = opt.d_word_vec - emb_dim - pos_dim
-            opt.d_vec_list = [emb_dim, pos_dim, pred_dim]
+            emb_dim = word_emb.shape[1] if word_emb is not None else opt.d_word_vec // 5
+            pred_emb_dim = word_emb.shape[1] if word_emb is not None else opt.d_word_vec // 5
+            rest_dim = opt.d_word_vec - emb_dim - pred_emb_dim
+            pos_dim = rest_dim // 3
+            pred_pos_dim = rest_dim // 3
+            pred_idx_dim = rest_dim // 3
+            opt.d_vec_list = [emb_dim, pos_dim, pred_idx_dim, pred_emb_dim, pred_pos_dim]
         print('[Info] input embedding dims: {}'.format(opt.d_vec_list))
+        print('[Info] Transformer input dims: {}'.format(opt.d_model))
         for d in opt.d_vec_list:
             assert d >= 0, 'negative dimension'
-        opt.n_cate_list = [opt.vocab_size, opt.n_pos, 2]
-        opt.emb_learnable_list = [False, True, True]
-        opt.pre_emb_list = [word_emb, None, None]
+        opt.n_cate_list = [opt.vocab_size, opt.n_pos, 2, opt.vocab_size, opt.n_pos]
+        opt.emb_learnable_list = [d[0] and d[1] > 0 for d in
+                                  zip([False, True, True, False, True], opt.d_vec_list)]
+        opt.pre_emb_list = [d[0] if d[1] > 0 else None for d in
+                            zip([word_emb, None, None, word_emb, None], opt.d_vec_list)]
+        opt.emb_op = 'sum'
         transformer = TransformerTagger(
             opt.n_cate_list,
             opt.n_class,
             opt.max_token_seq_len,
             d_vec_list=opt.d_vec_list,
             pre_emb_list=opt.pre_emb_list,
+            emb_op=opt.emb_op,
             emb_learnable_list=opt.emb_learnable_list,
             d_model=opt.d_model,
             d_inner=opt.d_inner_hid,

@@ -106,7 +106,7 @@ class MultiInpEncoder(nn.Module):
 
     def __init__(
             self,
-            n_cate_list, len_max_seq, d_vec_list, pre_emb_list, emb_learnable_list,
+            n_cate_list, len_max_seq, d_vec_list, pre_emb_list, emb_learnable_list, emb_op,
             n_layers, n_head, d_k, d_v, d_model, d_inner, dropout=0.1):
 
         super().__init__()
@@ -116,19 +116,47 @@ class MultiInpEncoder(nn.Module):
             and len(pre_emb_list) == len(emb_learnable_list), \
             'Number of elements should be the same.'
 
+        assert emb_op in {'sum', 'concat'}, 'emb_op not supported'
+
         n_position = len_max_seq + 1
 
-        d_inp = np.sum(d_vec_list) # all the input embeddings are concatenated
+        # non empty input indicator
+        self.inp_use_list = [d > 0 for d in d_vec_list]
+        # number of non empty input
+        self.n_inp_use = np.sum(self.inp_use_list)
+        # dimension check (d_inp is the dimension after embedding is applied)
+        self.emb_op = emb_op
+        if self.emb_op == 'sum':
+            d_inp = 0
+            for d in d_vec_list:
+                if d and not d_inp:
+                    d_inp = d
+                if d and d_inp and d != d_inp:
+                    raise ValueError('input dimensions are consistent')
+            if not d_inp:
+                raise ValueError('input dimensions are all zeros')
+        elif self.emb_op == 'concat':
+            d_inp = np.sum(d_vec_list) # all the input embeddings are concatenated
+        else:
+            raise ValueError
         assert d_model == d_inp, \
             'To facilitate the residual connections, \
              the dimensions of all module outputs shall be the same.'
 
+        # pretrained embeding check
+        for n_cate, d_vec, emb, use in zip(n_cate_list, d_vec_list, pre_emb_list, self.inp_use_list):
+            if use and emb is not None and emb.shape != (n_cate, d_vec):
+                raise ValueError('pretrained embedding dimension is wrong')
+
+        # build embedding
         self.word_emb_list = nn.ModuleList([
             nn.Embedding(n_cate, d_vec, padding_idx=Constants.PAD) if emb is None \
                 else nn.Embedding.from_pretrained(torch.FloatTensor(emb))
-            for n_cate, d_vec, emb in
-            zip(n_cate_list, d_vec_list, pre_emb_list)])
+            for n_cate, d_vec, emb, use in
+            zip(n_cate_list, d_vec_list, pre_emb_list, self.inp_use_list) if use])
 
+        # set embedding grad
+        emb_learnable_list = [el for el, use in zip(emb_learnable_list, self.inp_use_list)]
         for i, emb in enumerate(self.word_emb_list):
             emb.weight.requires_grad = emb_learnable_list[i]
 
@@ -145,8 +173,8 @@ class MultiInpEncoder(nn.Module):
         enc_slf_attn_list = []
 
         # -- Split inputs
-        word_seqs = [torch.squeeze(c, dim=-1) for c in
-            torch.chunk(word_seqs, word_seqs.size(-1), dim=-1)]
+        word_seqs = [torch.squeeze(c, dim=-1) for c, use in
+            zip(torch.chunk(word_seqs, word_seqs.size(-1), dim=-1), self.inp_use_list) if use]
 
         # -- Prepare masks
         # the first inp is always tokens
@@ -155,7 +183,12 @@ class MultiInpEncoder(nn.Module):
 
         # -- Embedding
         enc_output = [emb(word_seq) for word_seq, emb in zip(word_seqs, self.word_emb_list)]
-        enc_output = torch.cat(enc_output, dim=-1)
+        if self.emb_op == 'sum':
+            enc_output = torch.sum(torch.stack(enc_output, dim=-1), dim=-1)
+        elif self.emb_op == 'concat':
+            enc_output = torch.cat(enc_output, dim=-1)
+        else:
+            raise ValueError
         enc_output += self.position_enc(pos_seq)
 
         # -- Forward
@@ -286,19 +319,20 @@ class TransformerTagger(nn.Module):
     def __init__(
             self,
             n_cate_list, n_class, len_max_seq, d_vec_list,
-            pre_emb_list, emb_learnable_list,
+            pre_emb_list, emb_learnable_list, emb_op,
             d_model=512, d_inner=2048, n_layers=6,
             n_head=8, d_k=64, d_v=64, dropout=0.1):
 
         super().__init__()
 
+        assert emb_op in {'sum', 'concat'}, 'emb_op not supported'
+
         self.encoder = MultiInpEncoder(
             n_cate_list=n_cate_list, len_max_seq=len_max_seq,
             d_vec_list=d_vec_list, pre_emb_list=pre_emb_list,
-            emb_learnable_list=emb_learnable_list,
+            emb_learnable_list=emb_learnable_list, emb_op=emb_op,
             d_model=d_model,d_inner=d_inner, n_layers=n_layers,
             n_head=n_head, d_k=d_k, d_v=d_v, dropout=dropout)
-
 
         self.word_prj = nn.Linear(d_model, n_class, bias=False)
         nn.init.xavier_normal_(self.word_prj.weight)

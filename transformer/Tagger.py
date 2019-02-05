@@ -21,6 +21,7 @@ class Tagger(object):
             model_opt.max_token_seq_len,
             d_vec_list=model_opt.d_vec_list,
             pre_emb_list=model_opt.pre_emb_list,
+            emb_op=model_opt.emb_op,
             emb_learnable_list=model_opt.emb_learnable_list,
             d_model=model_opt.d_model,
             d_inner=model_opt.d_inner_hid,

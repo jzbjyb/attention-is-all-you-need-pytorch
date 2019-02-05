@@ -238,6 +238,9 @@ def convert_instance_to_idx_seq(word_insts, word2idx):
     ''' Mapping words to idx sequence. '''
     return [[word2idx.get(w, Constants.UNK) for w in s] for s in word_insts]
 
+def convert_pred_idx_to_repeat(idxs, lists):
+    return [[list[idx]] * len(list) for idx, list in zip(idxs, lists)]
+
 concat_inp = lambda *x: [list(zip(*inst)) for inst in zip(*x)]
 
 def main_mt(opt):
@@ -326,12 +329,12 @@ def main_openie(opt):
     opt.max_token_seq_len = opt.max_word_seq_len # no need to include special tokens
 
     # Training set
-    train_word_insts, train_pred_insts, train_pos_insts, train_tag_insts = \
-        read_instances_from_conll_csv(opt.train_src, opt.max_word_seq_len, opt.keep_case, get_pos=opt.get_pos)
+    train_word_insts, train_pred_idx_insts, train_pos_insts, train_tag_insts = \
+        read_instances_from_conll_csv(opt.train_src, opt.max_word_seq_len, opt.keep_case, get_pos=True)
 
     # Validation set
-    valid_word_insts, valid_pred_insts, valid_pos_insts, valid_tag_insts = \
-        read_instances_from_conll_csv(opt.valid_src, opt.max_word_seq_len, opt.keep_case, get_pos=opt.get_pos)
+    valid_word_insts, valid_pred_idx_insts, valid_pos_insts, valid_tag_insts = \
+        read_instances_from_conll_csv(opt.valid_src, opt.max_word_seq_len, opt.keep_case, get_pos=True)
 
     # Build vocabulary
     if opt.vocab:
@@ -384,17 +387,34 @@ def main_openie(opt):
     train_tag_insts = convert_instance_to_idx_seq(train_tag_insts, tag2idx)
     valid_tag_insts = convert_instance_to_idx_seq(valid_tag_insts, tag2idx)
 
-    # concatenate multiple word-related inputs
+    if opt.pred_repeat:
+        print('[Info] Use repeated predicate.')
+        pred_idxs = [tp.index(1) for tp in train_pred_idx_insts]
+        train_pred_word_insts = convert_pred_idx_to_repeat(pred_idxs, train_word_insts)
+        train_pred_pos_insts = convert_pred_idx_to_repeat(pred_idxs, train_pos_insts)
+        pred_idxs = [tp.index(1) for tp in valid_pred_idx_insts]
+        valid_pred_word_insts = convert_pred_idx_to_repeat(pred_idxs, valid_word_insts)
+        valid_pred_pos_insts = convert_pred_idx_to_repeat(pred_idxs, valid_pos_insts)
+        # concatenate multiple word-related inputs
+        twc = concat_inp(train_word_insts, train_pos_insts, train_pred_idx_insts,
+                         train_pred_word_insts, train_pred_pos_insts)
+        vwc = concat_inp(valid_word_insts, valid_pos_insts, valid_pred_idx_insts,
+                         valid_pred_word_insts, valid_pred_pos_insts)
+    else:
+        print('[Info] Use predicate indicator.')
+        # concatenate multiple word-related inputs
+        twc = concat_inp(train_word_insts, train_pos_insts, train_pred_idx_insts)
+        vwc = concat_inp(valid_word_insts, valid_pos_insts, valid_pred_idx_insts)
     data = {
         'settings': opt,
         'word2idx': word2idx,
         'pos2idx': pos2idx,
         'tag2idx': tag2idx,
         'train': {
-            'word': concat_inp(train_word_insts, train_pos_insts, train_pred_insts),
+            'word': twc,
             'tag': train_tag_insts},
         'valid': {
-            'word': concat_inp(valid_word_insts, valid_pos_insts, valid_pred_insts),
+            'word': vwc,
             'tag': valid_tag_insts}}
 
     print('[Info] Dumping the processed data to pickle file', opt.save_data)
@@ -441,6 +461,7 @@ if __name__ == '__main__':
         main_mt(opt)
     elif opt.task == 'openie':
         opt.get_pos = True
+        opt.pred_repeat = True
         main_openie(opt)
     elif opt.task == 'emb':
         emb(opt)

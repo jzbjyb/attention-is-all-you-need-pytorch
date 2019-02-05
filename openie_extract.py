@@ -46,6 +46,8 @@ def tag2extraction(sent_list, pred_list, tag_prob_list):
             elif cur_arg:
                 cur_args.append(cur_arg)
                 cur_arg = []
+        if cur_arg:
+            cur_args.append(cur_arg)
         # create extraction
         if cur_args:
             exts.append(Extraction(tokens, (pred_word, pred_ind), cur_args, probs, calc_prob=avg_conf))
@@ -53,9 +55,13 @@ def tag2extraction(sent_list, pred_list, tag_prob_list):
 
 def read_instances_from_raw_sentence(inst_file, max_sent_len, keep_case):
     trimmed_sent_count = 0
-    raw_sent_insts, word_insts, pred_insts, pos_insts = [], [], [], []
+    sent_count, cand_count = 0, 0
+    raw_sent_insts, word_insts, pos_insts, \
+    pred_word_insts, pred_pos_insts, pred_idx_insts = \
+        [], [], [], [], [], []
     with open(inst_file) as f:
         for sent in f:
+            sent_count += 1
             sent = sent.strip()
             word_inst = sent.split(' ')
             pos_inst = [t.tag_ for t in SpacyParser.parse_tokens(word_inst)][:max_sent_len]
@@ -68,17 +74,21 @@ def read_instances_from_raw_sentence(inst_file, max_sent_len, keep_case):
                 if not pos.startswith('V'):
                     continue
                 # one instance
-                pred_inst = [0] * len(word_inst)
-                pred_inst[pred_ind] = 1
+                cand_count += 1
+                pred_idx_inst = [0] * len(word_inst)
+                pred_idx_inst[pred_ind] = 1
                 raw_sent_insts.append(sent)
                 word_insts.append(word_inst)
-                pred_insts.append(pred_inst)
                 pos_insts.append(pos_inst)
+                pred_word_insts.append([word_inst[pred_ind] for _ in word_inst])
+                pred_pos_insts.append([pos_inst[pred_ind] for _ in pos_inst])
+                pred_idx_insts.append(pred_idx_inst)
 
     if trimmed_sent_count > 0:
         print('[Warning] {} instances are trimmed to the max sentence length {}.'
               .format(trimmed_sent_count, max_sent_len))
-    return raw_sent_insts, word_insts, pred_insts, pos_insts
+    print('[Info] #sentence {}, # candidates {}'.format(sent_count, cand_count))
+    return raw_sent_insts, word_insts, pos_insts, pred_word_insts, pred_pos_insts, pred_idx_insts
 
 def main():
     '''Main Function'''
@@ -109,7 +119,8 @@ def main():
     # Prepare DataLoader
     preprocess_data = torch.load(opt.vocab)
     preprocess_settings = preprocess_data['settings']
-    test_raw_sent_insts, test_word_insts, test_pred_insts, test_pos_insts = \
+    test_raw_sent_insts, test_word_insts, test_pos_insts, \
+    test_pred_word_insts, test_pred_pos_insts, test_pred_idx_insts = \
         read_instances_from_raw_sentence(
             opt.sent, preprocess_settings.max_word_seq_len,
             preprocess_settings.keep_case,)
@@ -117,12 +128,18 @@ def main():
         test_word_insts, preprocess_data['word2idx'])
     test_pos_insts = convert_instance_to_idx_seq(
         test_pos_insts, preprocess_data['pos2idx'])
+    test_pred_word_insts = convert_instance_to_idx_seq(
+        test_pred_word_insts, preprocess_data['word2idx'])
+    test_pred_pos_insts = convert_instance_to_idx_seq(
+        test_pred_pos_insts, preprocess_data['pos2idx'])
+    twc = concat_inp(test_word_insts, test_pos_insts, test_pred_idx_insts,
+                     test_pred_word_insts, test_pred_pos_insts)
 
     test_loader = torch.utils.data.DataLoader(
         OpenIEDataset(
             word2idx=preprocess_data['word2idx'],
             tag2idx=preprocess_data['tag2idx'],
-            word_insts=concat_inp(test_word_insts, test_pos_insts, test_pred_insts)),
+            word_insts=twc),
         num_workers=2,
         batch_size=opt.batch_size,
         collate_fn=openie_collate_fn)
@@ -136,7 +153,7 @@ def main():
             tag_probs = torch.cat([torch.unsqueeze(tags, -1).float(), torch.unsqueeze(probs, -1)], dim=-1)
             tag_probs = tag_probs.cpu().numpy()
             sent_list = test_raw_sent_insts[cur : cur + opt.batch_size]
-            pred_list = test_pred_insts[cur : cur + opt.batch_size]
+            pred_list = test_pred_idx_insts[cur : cur + opt.batch_size]
             tag_prob_list = [[(test_loader.dataset.idx2tag[t], p) for t, p in tps] for tps in tag_probs]
             exts = tag2extraction(sent_list, pred_list, tag_prob_list)
             for ext in exts:
