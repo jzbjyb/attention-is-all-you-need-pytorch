@@ -39,7 +39,7 @@ def get_attn_key_pad_mask(seq_k, seq_q):
 
     # Expand to fit the shape of key query attention matrix.
     len_q = seq_q.size(1)
-    padding_mask = seq_k.eq(Constants.PAD)
+    padding_mask = seq_k.eq(Constants.PAD) # b x lk
     padding_mask = padding_mask.unsqueeze(1).expand(-1, len_q, -1)  # b x lq x lk
 
     return padding_mask
@@ -106,8 +106,9 @@ class MultiInpEncoder(nn.Module):
 
     def __init__(
             self,
-            n_cate_list, len_max_seq, d_vec_list, pre_emb_list, emb_learnable_list, emb_op,
-            n_layers, n_head, d_k, d_v, d_model, d_inner, dropout=0.1):
+            n_cate_list, len_max_seq, d_vec_list, pre_emb_list, emb_learnable_list,
+            emb_op, rel_pos_emb_op, n_rel_pos, n_layers, n_head, d_k, d_v, d_model, d_inner,
+            dropout=0.1):
 
         super().__init__()
 
@@ -117,6 +118,8 @@ class MultiInpEncoder(nn.Module):
             'Number of elements should be the same.'
 
         assert emb_op in {'sum', 'concat'}, 'emb_op not supported'
+        assert rel_pos_emb_op in {'no', 'lookup', 'lstm', 'trans'}, \
+            'rel_pos_emb_op not supported'
 
         n_position = len_max_seq + 1
 
@@ -160,15 +163,27 @@ class MultiInpEncoder(nn.Module):
         for i, emb in enumerate(self.word_emb_list):
             emb.weight.requires_grad = emb_learnable_list[i]
 
+        # build abs positional embedding
         self.position_enc = nn.Embedding.from_pretrained(
             get_sinusoid_encoding_table(n_position, d_inp, padding_idx=0),
             freeze=True)
 
+        # build rel positional embedding
+        self.rel_pos_emb_op = rel_pos_emb_op
+        if self.rel_pos_emb_op == 'no':
+            rel_pos_op = None
+        elif self.rel_pos_emb_op == 'lookup':
+            rel_pos_op = 'external'
+            self.rel_pos_emb = nn.Embedding(n_rel_pos, d_inp, padding_idx=Constants.PAD)
+        else:
+            raise NotImplementedError
+
         self.layer_stack = nn.ModuleList([
-            EncoderLayer(d_model, d_inner, n_head, d_k, d_v, dropout=dropout)
+            EncoderLayer(d_model, d_inner, n_head, d_k, d_v,
+                         rel_pos_op=rel_pos_op, dropout=dropout)
             for _ in range(n_layers)])
 
-    def forward(self, word_seqs, pos_seq, return_attns=False):
+    def forward(self, word_seqs, pos_seq, rel_pos_seq=None, return_attns=False):
 
         enc_slf_attn_list = []
 
@@ -191,10 +206,19 @@ class MultiInpEncoder(nn.Module):
             raise ValueError
         enc_output += self.position_enc(pos_seq)
 
+        # -- Rel pos embedding
+        if self.rel_pos_emb_op == 'no':
+            rel_pos_seq = None
+        elif self.rel_pos_emb_op == 'lookup':
+            rel_pos_seq = self.rel_pos_emb(rel_pos_seq)
+            rel_pos_seq = rel_pos_seq.mean(-2)
+        else:
+            raise NotImplementedError
+
         # -- Forward
         for enc_layer in self.layer_stack:
             enc_output, enc_slf_attn = enc_layer(
-                enc_output,
+                enc_output, rel_pos_seq,
                 non_pad_mask=non_pad_mask,
                 slf_attn_mask=slf_attn_mask)
             if return_attns:
@@ -320,26 +344,26 @@ class TransformerTagger(nn.Module):
             self,
             n_cate_list, n_class, len_max_seq, d_vec_list,
             pre_emb_list, emb_learnable_list, emb_op,
+            rel_pos_emb_op, n_rel_pos,
             d_model=512, d_inner=2048, n_layers=6,
             n_head=8, d_k=64, d_v=64, dropout=0.1):
 
         super().__init__()
 
-        assert emb_op in {'sum', 'concat'}, 'emb_op not supported'
-
         self.encoder = MultiInpEncoder(
             n_cate_list=n_cate_list, len_max_seq=len_max_seq,
             d_vec_list=d_vec_list, pre_emb_list=pre_emb_list,
             emb_learnable_list=emb_learnable_list, emb_op=emb_op,
+            rel_pos_emb_op=rel_pos_emb_op, n_rel_pos=n_rel_pos,
             d_model=d_model,d_inner=d_inner, n_layers=n_layers,
             n_head=n_head, d_k=d_k, d_v=d_v, dropout=dropout)
 
         self.word_prj = nn.Linear(d_model, n_class, bias=False)
         nn.init.xavier_normal_(self.word_prj.weight)
 
-    def forward(self, inps, pos):
+    def forward(self, inps, pos, rel_pos=None):
 
-        enc_output, *_ = self.encoder(inps, pos)
+        enc_output, *_ = self.encoder(inps, pos, rel_pos)
         tag_logit = self.word_prj(enc_output)
 
         return tag_logit

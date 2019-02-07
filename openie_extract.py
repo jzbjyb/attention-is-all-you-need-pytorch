@@ -12,7 +12,8 @@ from functools import reduce
 
 from dataset import openie_collate_fn, OpenIEDataset
 from transformer.Tagger import Tagger
-from preprocess import convert_instance_to_idx_seq, concat_inp, SpacyParser
+from preprocess import convert_instance_to_idx_seq, concat_inp, SpacyParser, \
+    gen_openie_sample, convert_path_instance_to_idx_seq
 
 class Extraction:
     def __init__(self, sent, pred, args, probs,
@@ -53,42 +54,43 @@ def tag2extraction(sent_list, pred_list, tag_prob_list):
             exts.append(Extraction(tokens, (pred_word, pred_ind), cur_args, probs, calc_prob=avg_conf))
     return exts
 
-def read_instances_from_raw_sentence(inst_file, max_sent_len, keep_case):
+def read_instances_from_raw_sentence(inst_file, max_sent_len, keep_case, get_pos=True,
+                                     pred_repeat=True, get_path=True, max_path_len=1):
     trimmed_sent_count = 0
     sent_count, cand_count = 0, 0
-    raw_sent_insts, word_insts, pos_insts, \
-    pred_word_insts, pred_pos_insts, pred_idx_insts = \
-        [], [], [], [], [], []
+    raw_sent_insts, word_insts, pred_insts, pred_word_insts, \
+    pred_pos_insts, pos_insts, path_insts = [], [], [], [], [], [], []
     with open(inst_file) as f:
         for sent in f:
             sent_count += 1
             sent = sent.strip()
             word_inst = sent.split(' ')
             pos_inst = [t.tag_ for t in SpacyParser.parse_tokens(word_inst)][:max_sent_len]
-            if not keep_case:
-                word_inst = [word.lower() for word in word_inst]
-            if len(word_inst) > max_sent_len:
-                trimmed_sent_count += 1
-            word_inst = word_inst[:max_sent_len]
             for pred_ind, pos in zip(range(len(pos_inst)), pos_inst):
                 if not pos.startswith('V'):
                     continue
-                # one instance
+                s = gen_openie_sample(word_inst, pred_ind, max_sent_len, keep_case,
+                                      get_pos=get_pos, pred_repeat=pred_repeat,
+                                      get_path=get_path, max_path_len=max_path_len)
+                if s[0]:
+                    continue
+                if s[1]:
+                    trimmed_sent_count += 1
                 cand_count += 1
-                pred_idx_inst = [0] * len(word_inst)
-                pred_idx_inst[pred_ind] = 1
                 raw_sent_insts.append(sent)
+                word_inst, pred_inst, pred_word_inst, pred_pos_inst, pos_inst, path_inst = s[2:]
                 word_insts.append(word_inst)
+                pred_insts.append(pred_inst)
+                pred_word_insts.append(pred_word_inst)
+                pred_pos_insts.append(pred_pos_inst)
                 pos_insts.append(pos_inst)
-                pred_word_insts.append([word_inst[pred_ind] for _ in word_inst])
-                pred_pos_insts.append([pos_inst[pred_ind] for _ in pos_inst])
-                pred_idx_insts.append(pred_idx_inst)
+                path_insts.append(path_inst)
 
     if trimmed_sent_count > 0:
         print('[Warning] {} instances are trimmed to the max sentence length {}.'
               .format(trimmed_sent_count, max_sent_len))
     print('[Info] #sentence {}, # candidates {}'.format(sent_count, cand_count))
-    return raw_sent_insts, word_insts, pos_insts, pred_word_insts, pred_pos_insts, pred_idx_insts
+    return raw_sent_insts, word_insts, pred_insts, pred_word_insts, pred_pos_insts, pos_insts, path_insts
 
 def main():
     '''Main Function'''
@@ -118,12 +120,12 @@ def main():
 
     # Prepare DataLoader
     preprocess_data = torch.load(opt.vocab)
-    preprocess_settings = preprocess_data['settings']
-    test_raw_sent_insts, test_word_insts, test_pos_insts, \
-    test_pred_word_insts, test_pred_pos_insts, test_pred_idx_insts = \
+    pset = preprocess_data['settings']
+    test_raw_sent_insts, test_word_insts, test_pred_idx_insts, \
+    test_pred_word_insts, test_pred_pos_insts, test_pos_insts, test_path_insts = \
         read_instances_from_raw_sentence(
-            opt.sent, preprocess_settings.max_word_seq_len,
-            preprocess_settings.keep_case,)
+            opt.sent, pset.max_word_seq_len, pset.keep_case, get_pos=pset.get_pos,
+            pred_repeat=pset.pred_repeat, get_path=pset.get_path, max_path_len=pset.max_path_len)
     test_word_insts = convert_instance_to_idx_seq(
         test_word_insts, preprocess_data['word2idx'])
     test_pos_insts = convert_instance_to_idx_seq(
@@ -132,6 +134,8 @@ def main():
         test_pred_word_insts, preprocess_data['word2idx'])
     test_pred_pos_insts = convert_instance_to_idx_seq(
         test_pred_pos_insts, preprocess_data['pos2idx'])
+    test_path_insts = convert_path_instance_to_idx_seq(
+        test_path_insts, preprocess_data['path2idx'])
     twc = concat_inp(test_word_insts, test_pos_insts, test_pred_idx_insts,
                      test_pred_word_insts, test_pred_pos_insts)
 
@@ -139,7 +143,8 @@ def main():
         OpenIEDataset(
             word2idx=preprocess_data['word2idx'],
             tag2idx=preprocess_data['tag2idx'],
-            word_insts=twc),
+            word_insts=twc,
+            path_insts=test_path_insts),
         num_workers=2,
         batch_size=opt.batch_size,
         collate_fn=openie_collate_fn)

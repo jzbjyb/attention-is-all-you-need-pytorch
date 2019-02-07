@@ -11,11 +11,26 @@ def paired_collate_fn(insts):
     return (*src_insts, *tgt_insts)
 
 def openie_paired_collate_fn(insts):
-    word_insts, tag_insts = list(zip(*insts))
-    return (*collate_fn(word_insts), collate_fn(tag_insts, get_pos=False))
+    word_insts, path_insts, tag_insts = list(zip(*insts))
+    return (*collate_fn(word_insts), collate_fn_2d(path_insts),
+            collate_fn(tag_insts, get_pos=False))
 
 def openie_collate_fn(insts):
-    return (*collate_fn(insts), )
+    word_insts, path_insts = list(zip(*insts))
+    return (*collate_fn(word_insts), collate_fn_2d(path_insts))
+
+def collate_fn_2d(insts):
+    if len(insts) <= 0:
+        raise ValueError
+    max_len = max(len(inst) for inst in insts)
+    pad_shape = (max_len, max_len) + np.array(insts[0]).shape[2:]
+    def pad(inst):
+        ninst = np.full(pad_shape, Constants.PAD)
+        ninst[:len(inst), :len(inst)] = inst
+        return ninst
+    batch_seq = np.array([pad(inst) for inst in insts])
+    batch_seq = torch.LongTensor(batch_seq)
+    return batch_seq
 
 def collate_fn(insts, get_pos=True):
     ''' Pad the instance to the max seq length in batch '''
@@ -114,9 +129,10 @@ class TranslationDataset(torch.utils.data.Dataset):
 
 class OpenIEDataset(torch.utils.data.Dataset):
     def __init__(
-        self, word2idx, tag2idx, word_insts=None, tag_insts=None):
+        self, word2idx, tag2idx, word_insts=None, path_insts=None, tag_insts=None):
 
         assert word_insts
+        assert path_insts
 
         idx2word = {idx:word for word, idx in word2idx.items()}
         idx2tag = {idx:tag for tag, idx in tag2idx.items()}
@@ -126,6 +142,7 @@ class OpenIEDataset(torch.utils.data.Dataset):
         self._idx2tag = idx2tag
         self._word_insts = word_insts
         self._tag_insts = tag_insts
+        self._path_insts = path_insts
 
     @property
     def n_insts(self):
@@ -161,7 +178,7 @@ class OpenIEDataset(torch.utils.data.Dataset):
         return self.n_insts
 
     def __getitem__(self, idx):
-        # return word seq and tag seq separately
+        # return word seq, path seq, tag seq separately
         if self._tag_insts:
-            return self._word_insts[idx], self._tag_insts[idx]
-        return self._word_insts[idx]
+            return self._word_insts[idx], self._path_insts[idx], self._tag_insts[idx]
+        return self._word_insts[idx], self._path_insts[idx]

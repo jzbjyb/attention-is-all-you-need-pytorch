@@ -23,6 +23,8 @@ class Tagger(object):
             pre_emb_list=model_opt.pre_emb_list,
             emb_op=model_opt.emb_op,
             emb_learnable_list=model_opt.emb_learnable_list,
+            rel_pos_emb_op=model_opt.rel_pos_emb_op,
+            n_rel_pos=model_opt.n_rel_pos,
             d_model=model_opt.d_model,
             d_inner=model_opt.d_inner_hid,
             n_layers=model_opt.n_layers,
@@ -39,11 +41,12 @@ class Tagger(object):
         self.model = model
         self.model.eval()
 
-    def tag_batch(self, word_seq, pos_seq, skip_first=2):
+    def tag_batch(self, word_seq, pos_seq, rel_pos_seq=None, skip_first=2):
         ''' tagging work in one batch '''
         with torch.no_grad():
-            word_seq, pos_seq = word_seq.to(self.device), pos_seq.to(self.device)
-            pred = self.model(word_seq, pos_seq)
+            word_seq, pos_seq, rel_pos_seq = \
+                word_seq.to(self.device), pos_seq.to(self.device), rel_pos_seq.to(self.device)
+            pred = self.model(word_seq, pos_seq, rel_pos_seq)
             # the first skip_first classes are useless (PAD or UNK) in prediction
             pred = torch.nn.Softmax(-1)(pred[:, :, skip_first:]) # logit to prob
             pred = pred.max(-1)

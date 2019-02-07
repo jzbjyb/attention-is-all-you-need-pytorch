@@ -78,7 +78,7 @@ def one_epoch(model, data, optimizer, device, smoothing, opt, is_train=False):
                 src_seq, src_pos, tgt_seq, tgt_pos = map(lambda x: x.to(device), batch)
                 gold = tgt_seq[:, 1:]
             elif opt.task == 'openie':
-                word_seq, pos_seq, tag_seq = map(lambda x: x.to(device), batch)
+                word_seq, pos_seq, rel_pos_seq, tag_seq = map(lambda x: x.to(device), batch)
                 gold = tag_seq
             else:
                 raise ValueError
@@ -89,7 +89,7 @@ def one_epoch(model, data, optimizer, device, smoothing, opt, is_train=False):
             if opt.task == 'mt':
                 pred = model(src_seq, src_pos, tgt_seq, tgt_pos)
             elif opt.task == 'openie':
-                pred = model(word_seq, pos_seq)
+                pred = model(word_seq, pos_seq, rel_pos_seq)
                 pred = pred.view(-1, pred.size(2)) # flatten
             else:
                 raise ValueError
@@ -237,6 +237,7 @@ def main():
         opt.vocab_size = training_data.dataset.vocab_size
         opt.n_class = data['settings'].n_class
         opt.n_pos = data['settings'].n_pos
+        opt.n_rel_pos = data['settings'].n_path
     else:
         raise ValueError
 
@@ -289,6 +290,7 @@ def main():
         opt.pre_emb_list = [d[0] if d[1] > 0 else None for d in
                             zip([word_emb, None, None, word_emb, None], opt.d_vec_list)]
         opt.emb_op = 'sum'
+        opt.rel_pos_emb_op = 'lookup'
         transformer = TransformerTagger(
             opt.n_cate_list,
             opt.n_class,
@@ -297,6 +299,8 @@ def main():
             pre_emb_list=opt.pre_emb_list,
             emb_op=opt.emb_op,
             emb_learnable_list=opt.emb_learnable_list,
+            rel_pos_emb_op=opt.rel_pos_emb_op,
+            n_rel_pos=opt.n_rel_pos,
             d_model=opt.d_model,
             d_inner=opt.d_inner_hid,
             n_layers=opt.n_layers,
@@ -348,6 +352,7 @@ def prepare_dataloaders_openie(data, opt):
             word2idx=data['word2idx'],
             tag2idx=data['tag2idx'],
             word_insts=data['train']['word'],
+            path_insts=data['train']['path'],
             tag_insts=data['train']['tag']),
         num_workers=2,
         batch_size=opt.batch_size,
@@ -359,6 +364,7 @@ def prepare_dataloaders_openie(data, opt):
             word2idx=data['word2idx'],
             tag2idx=data['tag2idx'],
             word_insts=data['valid']['word'],
+            path_insts=data['valid']['path'],
             tag_insts=data['valid']['tag']),
         num_workers=2,
         batch_size=opt.batch_size,
