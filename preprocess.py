@@ -115,6 +115,7 @@ class WordVector(object):
         if initializer not in {'uniform'}:
             raise Exception('initializer not supported')
         self.initializer = initializer
+        self.first_line = first_line
         self.raw_words, self.raw_vectors = \
             load_word_vector(filepath, is_binary=is_binary, first_line=first_line)
         self.raw_vocab_size = len(self.raw_words)
@@ -167,11 +168,12 @@ class WordVector(object):
         self.dim = new_vectors.shape[1]
         self.vectors = new_vectors
 
-    def save_to_file(self, filepath, is_binary=False):
+    def save_to_file(self, filepath, is_binary=False, first_line=True):
         if is_binary:
             raise NotImplementedError
         with open(filepath, 'w') as fout:
-            fout.write('{} {}\n'.format(self.vocab_size, self.dim))
+            if first_line:
+                fout.write('{} {}\n'.format(self.vocab_size, self.dim))
             for i in range(self.vocab_size):
                 fout.write('{} {}\n'.format(
                     self.words[i], ' '.join(map(lambda x: '{:.5f}'.format(x), self.vectors[i]))))
@@ -237,8 +239,8 @@ def gen_openie_sample(tokens, pred, max_sent_len, keep_case, get_pos=True,
     if pred >= len(word_inst):
         useless = True
         return useless, trimmed, word_inst, pred_inst, pred_word_inst, pred_pos_inst, pos_inst, path_inst
-    pred_inst = [0] * len(word_inst)
-    pred_inst[pred] = 1
+    pred_inst = [1] * len(word_inst) # 0 is for PAD
+    pred_inst[pred] = 2
     if pred_repeat:
         pred_word_inst = [word_inst[pred]] * len(word_inst)
         if get_pos:
@@ -516,16 +518,23 @@ def main_openie(opt):
         tc[0][0], tc[0][1] / np.sum(list(map(itemgetter(1), tc)))))
     opt.n_class = len(tag2idx)
 
+    ## Build pred vocabulary
+    opt.n_pred_ind = 3 # 0/1 indicator with PAD
+
     ## Convert to index
     # word to index
     print('[Info] Convert word instances into sequences of word index.')
     train_word_insts = convert_instance_to_idx_seq(train_word_insts, word2idx)
     valid_word_insts = convert_instance_to_idx_seq(valid_word_insts, word2idx)
+    train_pred_word_insts = convert_instance_to_idx_seq(train_pred_word_insts, word2idx)
+    valid_pred_word_insts = convert_instance_to_idx_seq(valid_pred_word_insts, word2idx)
 
     # pos to index
     print('[Info] Convert pos instances into sequences of pos index.')
     train_pos_insts = convert_instance_to_idx_seq(train_pos_insts, pos2idx)
     valid_pos_insts = convert_instance_to_idx_seq(valid_pos_insts, pos2idx)
+    train_pred_pos_insts = convert_instance_to_idx_seq(train_pred_pos_insts, pos2idx)
+    valid_pred_pos_insts = convert_instance_to_idx_seq(valid_pred_pos_insts, pos2idx)
 
     # path to index
     print('[Info] Convert path instances into sequences of path index.')
@@ -562,8 +571,8 @@ def main_openie(opt):
     torch.save(data, opt.save_data)
     print('[Info] Finish.')
 
-def emb(opt):
-    wv = WordVector(opt.pre_word_emb, is_binary=False, first_line=False, initializer='uniform')
+def emb(opt, first_line=False):
+    wv = WordVector(opt.pre_word_emb, is_binary=False, first_line=first_line, initializer='uniform')
     # save vocab of the raw embedding
     emb_vocab = wv.words.tolist()
     emb_vocab = [Constants.PAD_WORD, Constants.UNK_WORD] + emb_vocab # prepand two special tokens
@@ -579,7 +588,12 @@ def emb(opt):
     print('high-frequency words: {}'.format(words[:10]))
     print('low-frequency words: {}'.format(words[-10:]))
     wv.transform(new_words=words)
-    wv.save_to_file(opt.save_data)
+    wv.save_to_file(opt.save_data, first_line=True)
+
+def emb_svd(opt, first_line=False, dim=10):
+    wv = WordVector(opt.pre_word_emb, is_binary=False, first_line=first_line, initializer='uniform')
+    wv.svd(n_components=dim)
+    wv.save_to_file(opt.save_data, first_line=first_line)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -593,7 +607,7 @@ if __name__ == '__main__':
     parser.add_argument('-keep_case', action='store_true')
     parser.add_argument('-share_vocab', action='store_true')
     parser.add_argument('-vocab', default=None)
-    parser.add_argument('-task', type=str, choices=['mt', 'openie', 'emb'], required=True)
+    parser.add_argument('-task', type=str, choices=['mt', 'openie', 'emb', 'emb_svd'], required=True)
     parser.add_argument('-pre_word_emb', type=str, default=None)
 
     opt = parser.parse_args()
@@ -607,6 +621,10 @@ if __name__ == '__main__':
         opt.max_path_len = 1
         main_openie(opt)
     elif opt.task == 'emb':
-        emb(opt)
+        # python preprocess.py -task emb -pre_word_emb X [-vocab X] -save_data X
+        emb(opt, first_line=False)
+    elif opt.task == 'emb_svd':
+        # python preprocess.py -task emb_svd -pre_word_emb X -save_data X
+        emb_svd(opt, first_line=False, dim=16)
     else:
         raise ValueError

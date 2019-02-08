@@ -117,6 +117,14 @@ class MultiInpEncoder(nn.Module):
             and len(pre_emb_list) == len(emb_learnable_list), \
             'Number of elements should be the same.'
 
+        # input check and rely on d_vec_list when there is conflict
+        for d in d_vec_list:
+            assert d >= 0, 'negative dimension'
+        emb_learnable_list = [d[0] and d[1] > 0 for d in
+                              zip(emb_learnable_list, d_vec_list)]
+        pre_emb_list = [d[0] if d[1] > 0 else None for d in
+                        zip(pre_emb_list, d_vec_list)]
+
         assert emb_op in {'sum', 'concat'}, 'emb_op not supported'
         assert rel_pos_emb_op in {'no', 'lookup', 'lstm', 'trans'}, \
             'rel_pos_emb_op not supported'
@@ -363,7 +371,7 @@ class TransformerTagger(nn.Module):
 
     def forward(self, inps, pos, rel_pos=None):
 
-        enc_output, *_ = self.encoder(inps, pos, rel_pos)
+        enc_output, attn = self.encoder(inps, pos, rel_pos, return_attns=True)
         tag_logit = self.word_prj(enc_output)
 
         return tag_logit

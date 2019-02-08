@@ -238,6 +238,7 @@ def main():
         opt.n_class = data['settings'].n_class
         opt.n_pos = data['settings'].n_pos
         opt.n_rel_pos = data['settings'].n_path
+        opt.n_pred_ind = data['settings'].n_path
     else:
         raise ValueError
 
@@ -266,11 +267,9 @@ def main():
             word_emb = WordVector(opt.emb, is_binary=False, first_line=True, initializer='uniform').get_vectors()
             print('[Info] Use pretrained embedding with dim {}'.format(word_emb.shape[1]))
         # get dimensions
-        # word, pos, pred_idx, pred_word, pred_pos
+        # word, pos, pred_ind, pred_word, pred_pos
         if opt.d_word_vec:
             opt.d_vec_list = list(map(int, opt.d_word_vec.split(':')))
-            assert opt.emb is None or (opt.d_vec_list[0] == word_emb.shape[1]), \
-                'word vec dimension is not consistent'
         else:
             opt.d_word_vec = opt.d_model
             emb_dim = word_emb.shape[1] if word_emb is not None else opt.d_word_vec // 5
@@ -280,15 +279,12 @@ def main():
             pred_pos_dim = rest_dim // 3
             pred_idx_dim = rest_dim // 3
             opt.d_vec_list = [emb_dim, pos_dim, pred_idx_dim, pred_emb_dim, pred_pos_dim]
+        print('[Info] input: {}'.format(['word', 'pos', 'pred_ind', 'pred_word', 'pred_pos']))
         print('[Info] input embedding dims: {}'.format(opt.d_vec_list))
         print('[Info] Transformer input dims: {}'.format(opt.d_model))
-        for d in opt.d_vec_list:
-            assert d >= 0, 'negative dimension'
-        opt.n_cate_list = [opt.vocab_size, opt.n_pos, 2, opt.vocab_size, opt.n_pos]
-        opt.emb_learnable_list = [d[0] and d[1] > 0 for d in
-                                  zip([False, True, True, False, True], opt.d_vec_list)]
-        opt.pre_emb_list = [d[0] if d[1] > 0 else None for d in
-                            zip([word_emb, None, None, word_emb, None], opt.d_vec_list)]
+        opt.n_cate_list = [opt.vocab_size, opt.n_pos, opt.n_pred_ind, opt.vocab_size, opt.n_pos]
+        opt.emb_learnable_list = [False, True, True, False, True]
+        opt.pre_emb_list = [word_emb, None, None, word_emb, None]
         opt.emb_op = 'sum'
         opt.rel_pos_emb_op = 'lookup'
         transformer = TransformerTagger(

@@ -32,12 +32,12 @@ class Extraction:
                                  '##' + str(list(map(lambda x: x[1], arg))[0])
                                  for arg in self.args])]))
 
-def tag2extraction(sent_list, pred_list, tag_prob_list):
+def tag2extraction(sent_list, pred_list, tag_prob_list, pred_idx=2):
     exts = []
     avg_conf = lambda probs: np.average(probs)
     for sent, pred, tag_probs in zip(sent_list, pred_list, tag_prob_list):
         tokens = sent.split(' ')
-        pred_ind = pred.index(1)
+        pred_ind = pred.index(pred_idx)
         pred_word = tokens[pred_ind]
         cur_args, cur_arg, probs = [], [], []
         for i, (token, (tag, prob)) in enumerate(zip(tokens, tag_probs)):
@@ -160,7 +160,7 @@ def main():
             sent_list = test_raw_sent_insts[cur : cur + opt.batch_size]
             pred_list = test_pred_idx_insts[cur : cur + opt.batch_size]
             tag_prob_list = [[(test_loader.dataset.idx2tag[t], p) for t, p in tps] for tps in tag_probs]
-            exts = tag2extraction(sent_list, pred_list, tag_prob_list)
+            exts = tag2extraction(sent_list, pred_list, tag_prob_list, pred_idx=2)
             for ext in exts:
                 fout.write('{}\n'.format(ext))
             cur += opt.batch_size
