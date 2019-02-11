@@ -112,7 +112,7 @@ def load_word_vector(filepath, is_binary=False, first_line=True):
 
 class WordVector(object):
     def __init__(self, filepath, is_binary=False, first_line=True, initializer='uniform'):
-        if initializer not in {'uniform'}:
+        if initializer not in {'uniform', 'zero'}:
             raise Exception('initializer not supported')
         self.initializer = initializer
         self.first_line = first_line
@@ -146,6 +146,8 @@ class WordVector(object):
                         fp.write('{}\n'.format(new_words[i]))
         if self.initializer == 'uniform':
             new_part = np.random.uniform(-.1, .1, [start_ind - self.raw_vocab_size, self.dim])
+        elif self.initializer == 'zero':
+            new_part = np.zeros((start_ind - self.raw_vocab_size, self.dim))
         else:
             raise ValueError
         self.vectors = np.concatenate([self.raw_vectors, new_part], axis=0)[new_ind]
@@ -572,7 +574,7 @@ def main_openie(opt):
     print('[Info] Finish.')
 
 def emb(opt, first_line=False):
-    wv = WordVector(opt.pre_word_emb, is_binary=False, first_line=first_line, initializer='uniform')
+    wv = WordVector(opt.pre_word_emb, is_binary=False, first_line=first_line, initializer='zero')
     # save vocab of the raw embedding
     emb_vocab = wv.words.tolist()
     emb_vocab = [Constants.PAD_WORD, Constants.UNK_WORD] + emb_vocab # prepand two special tokens

@@ -72,13 +72,15 @@ def one_epoch(model, data, optimizer, device, smoothing, opt, is_train=False):
     n_word_correct = 0
 
     with contextlib.nullcontext() if is_train else torch.no_grad():
-        for batch in tqdm(data, mininterval=2, desc=desc, leave=False):
+        for batch in tqdm(data, mininterval=0.5, desc=desc, leave=False):
             # prepare data
             if opt.task == 'mt':
                 src_seq, src_pos, tgt_seq, tgt_pos = map(lambda x: x.to(device), batch)
                 gold = tgt_seq[:, 1:]
             elif opt.task == 'openie':
                 word_seq, pos_seq, rel_pos_seq, tag_seq = map(lambda x: x.to(device), batch)
+                #print(word_seq[0])
+                #input()
                 gold = tag_seq
             else:
                 raise ValueError
@@ -132,31 +134,39 @@ def train(model, training_data, validation_data, optimizer, device, opt):
             log_tf.write('epoch,loss,ppl,accuracy\n')
             log_vf.write('epoch,loss,ppl,accuracy\n')
 
+    print('{:>5}\t{:>8}\t{:>8}\t{:>8}\t{:>8}'.format(
+        'epoch', 'train nll', 'train acc', 'val nll', 'val acc'))
     valid_accus = []
     for epoch_i in range(opt.epoch):
-        print('[ Epoch', epoch_i, ']')
+        #print('[ Epoch', epoch_i, ']')
 
         start = time.time()
         train_nll, train_accu, train_corr_pred = one_epoch(
             model, training_data, optimizer, device, smoothing=opt.label_smoothing,
             opt=opt, is_train=True)
         train_ppl = math.exp(min(train_nll, 100))
+        '''
         print('  - (Training) nll: {nll: 8.5f}, ppl: {ppl: 8.5f}, accuracy: {accu:3.3f} %, '\
               'elapse: {elapse:3.3f} min'.format(
                   nll=train_nll, ppl=train_ppl, accu=100*train_accu,
                   elapse=(time.time()-start)/60))
-        if epoch_i % 10 == 0:
-            tag_stat(train_corr_pred)
+        '''
+        #if epoch_i % 10 == 0:
+        #    tag_stat(train_corr_pred)
 
         start = time.time()
         valid_nll, valid_accu, valid_corr_pred = one_epoch(
             model, validation_data, optimizer, device, smoothing=opt.label_smoothing,
             opt=opt, is_train=False)
         valid_ppl = math.exp(min(valid_nll, 100))
+        '''
         print('  - (Validation) nll: {nll: 8.5f}, ppl: {ppl: 8.5f}, accuracy: {accu:3.3f} %, '\
                 'elapse: {elapse:3.3f} min'.format(
                     nll=valid_nll, ppl=valid_ppl, accu=100*valid_accu,
                     elapse=(time.time()-start)/60))
+        '''
+        print('{:>5}\t{train_nll:>8.3f}\t{train_accu:>8.3f}\t{val_nll:>8.3f}\t{val_accu:>8.3f}'.format(
+            epoch_i, train_nll=train_nll, train_accu=train_accu, val_nll=valid_nll, val_accu=valid_accu))
 
         valid_accus += [valid_accu]
 
@@ -174,7 +184,7 @@ def train(model, training_data, validation_data, optimizer, device, opt):
                 model_name = opt.save_model + '.chkpt'
                 if valid_accu >= max(valid_accus):
                     torch.save(checkpoint, model_name)
-                    print('    - [Info] The checkpoint file has been updated.')
+                    #print('    - [Info] The checkpoint file has been updated.')
 
         if log_train_file and log_valid_file:
             with open(log_train_file, 'a') as log_tf, open(log_valid_file, 'a') as log_vf:
@@ -220,6 +230,10 @@ def main():
 
     opt = parser.parse_args()
     opt.cuda = not opt.no_cuda
+
+    # seed
+    torch.manual_seed(2019)
+    np.random.seed(2019)
 
     #========= Loading Dataset =========#
     data = torch.load(opt.data)
