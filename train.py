@@ -72,7 +72,7 @@ def one_epoch(model, data, optimizer, device, smoothing, opt, is_train=False):
     n_word_correct = 0
 
     with contextlib.nullcontext() if is_train else torch.no_grad():
-        for batch in tqdm(data, mininterval=0.5, desc=desc, leave=False):
+        for batch in tqdm(data, mininterval=0.5, desc=desc, leave=False, disable=False):
             # prepare data
             if opt.task == 'mt':
                 src_seq, src_pos, tgt_seq, tgt_pos = map(lambda x: x.to(device), batch)
@@ -227,6 +227,8 @@ def main():
     parser.add_argument('-label_smoothing', action='store_true')
 
     parser.add_argument('-task', type=str, choices=['mt', 'openie'], default='mt')
+    parser.add_argument('-rel_pos_emb_op', type=str,
+                        choices=['no', 'lookup'], default='no')
 
     opt = parser.parse_args()
     opt.cuda = not opt.no_cuda
@@ -300,7 +302,6 @@ def main():
         opt.emb_learnable_list = [False, True, True, False, True]
         opt.pre_emb_list = [word_emb, None, None, word_emb, None]
         opt.emb_op = 'sum'
-        opt.rel_pos_emb_op = 'lookup'
         transformer = TransformerTagger(
             opt.n_cate_list,
             opt.n_class,
