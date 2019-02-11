@@ -23,7 +23,9 @@ def collate_fn_2d(insts):
     if len(insts) <= 0:
         raise ValueError
     max_len = max(len(inst) for inst in insts)
-    pad_shape = (max_len, max_len) + np.array(insts[0]).shape[2:]
+    max_depth = max(len(c) for inst in insts for r in inst for c in r)
+    insts = [[[c + [Constants.PAD] * (max_depth - len(c)) for c in r] for r in inst] for inst in insts]
+    pad_shape = (max_len, max_len, max_depth)
     def pad(inst):
         ninst = np.full(pad_shape, Constants.PAD)
         ninst[:len(inst), :len(inst)] = inst

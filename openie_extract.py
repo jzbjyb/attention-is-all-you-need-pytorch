@@ -54,8 +54,7 @@ def tag2extraction(sent_list, pred_list, tag_prob_list, pred_idx=2):
             exts.append(Extraction(tokens, (pred_word, pred_ind), cur_args, probs, calc_prob=avg_conf))
     return exts
 
-def read_instances_from_raw_sentence(inst_file, max_sent_len, keep_case, get_pos=True,
-                                     pred_repeat=True, get_path=True, max_path_len=1):
+def read_instances_from_raw_sentence(inst_file, opt):
     trimmed_sent_count = 0
     sent_count, cand_count = 0, 0
     raw_sent_insts, word_insts, pred_insts, pred_word_insts, \
@@ -65,13 +64,11 @@ def read_instances_from_raw_sentence(inst_file, max_sent_len, keep_case, get_pos
             sent_count += 1
             sent = sent.strip()
             word_inst = sent.split(' ')
-            pos_inst = [t.tag_ for t in SpacyParser.parse_tokens(word_inst)][:max_sent_len]
+            pos_inst = [t.tag_ for t in SpacyParser.parse_tokens(word_inst)][:opt.max_token_seq_len]
             for pred_ind, pos in zip(range(len(pos_inst)), pos_inst):
                 if not pos.startswith('V'):
                     continue
-                s = gen_openie_sample(word_inst, pred_ind, max_sent_len, keep_case,
-                                      get_pos=get_pos, pred_repeat=pred_repeat,
-                                      get_path=get_path, max_path_len=max_path_len)
+                s = gen_openie_sample(word_inst, pred_ind, opt)
                 if s[0]:
                     continue
                 if s[1]:
@@ -88,7 +85,7 @@ def read_instances_from_raw_sentence(inst_file, max_sent_len, keep_case, get_pos
 
     if trimmed_sent_count > 0:
         print('[Warning] {} instances are trimmed to the max sentence length {}.'
-              .format(trimmed_sent_count, max_sent_len))
+              .format(trimmed_sent_count, opt.max_token_seq_len))
     print('[Info] #sentence {}, # candidates {}'.format(sent_count, cand_count))
     return raw_sent_insts, word_insts, pred_insts, pred_word_insts, pred_pos_insts, pos_insts, path_insts
 
@@ -123,9 +120,7 @@ def main():
     pset = preprocess_data['settings']
     test_raw_sent_insts, test_word_insts, test_pred_idx_insts, \
     test_pred_word_insts, test_pred_pos_insts, test_pos_insts, test_path_insts = \
-        read_instances_from_raw_sentence(
-            opt.sent, pset.max_word_seq_len, pset.keep_case, get_pos=pset.get_pos,
-            pred_repeat=pset.pred_repeat, get_path=pset.get_path, max_path_len=pset.max_path_len)
+        read_instances_from_raw_sentence(opt.sent, pset)
     test_word_insts = convert_instance_to_idx_seq(
         test_word_insts, preprocess_data['word2idx'])
     test_pos_insts = convert_instance_to_idx_seq(

@@ -207,8 +207,16 @@ def read_instances_from_file(inst_file, max_sent_len, keep_case):
 
     return word_insts
 
-def gen_openie_sample(tokens, pred, max_sent_len, keep_case, get_pos=True,
-                      pred_repeat=True, get_path=True, max_path_len=1):
+def gen_openie_sample(tokens, pred, opt):
+    # parameters
+    max_sent_len = opt.max_token_seq_len
+    keep_case = opt.keep_case
+    get_pos = opt.get_pos
+    pred_repeat = opt.pred_repeat
+    get_path = opt.get_path
+    max_path_len = opt.max_path_len
+    path_comb_op = opt.path_comb_op
+
     useless, trimmed = False, False
     word_inst, pred_inst, pred_word_inst, pred_pos_inst, pos_inst, path_inst = [None] * 6
     # POS
@@ -234,7 +242,12 @@ def gen_openie_sample(tokens, pred, max_sent_len, keep_case, get_pos=True,
         pos_inst = pos_inst[:max_sent_len]
     if get_path:
         path_inst = path_inst[:max_sent_len]
-        path_inst = [[['->'.join(p[:max_path_len])] for p in pp[:max_sent_len]] for pp in path_inst]  # concat
+        if path_comb_op == 'concat':
+            path_inst = [[['->'.join(p[:max_path_len])] for p in pp[:max_sent_len]] for pp in path_inst]
+        elif path_comb_op == 'no':
+            path_inst = [[p[:max_path_len] for p in pp[:max_sent_len]] for pp in path_inst]
+        else:
+            raise ValueError
         for i in range(len(path_inst)):
             path_inst[i][i] = ['<self>']
     # predicate
@@ -249,9 +262,9 @@ def gen_openie_sample(tokens, pred, max_sent_len, keep_case, get_pos=True,
             pred_pos_inst = [pos_inst[pred]] * len(pos_inst)
     return useless, trimmed, word_inst, pred_inst, pred_word_inst, pred_pos_inst, pos_inst, path_inst
 
-def read_instances_from_conll_csv(inst_file, max_sent_len, keep_case,
-                                  get_pos=True, pred_repeat=True, get_path=True, max_path_len=1):
+def read_instances_from_conll_csv(inst_file, opt):
     ''' Convert conll file (in csv format) into word seq lists and tag seq lists '''
+
     df = pd.read_csv(inst_file, sep='\t', header=0, keep_default_na=False, quoting=3)
 
     # Split according to sentences
@@ -265,10 +278,9 @@ def read_instances_from_conll_csv(inst_file, max_sent_len, keep_case,
         # retrieve from csv
         raw_tokens = sent.word.values.tolist()
         pred = sent.head_pred_id.values[0]
-        tag_inst = sent.label.values[:max_sent_len].tolist()
+        tag_inst = sent.label.values[:opt.max_token_seq_len].tolist()
         # get one sample
-        s = gen_openie_sample(raw_tokens, pred, max_sent_len, keep_case, get_pos=get_pos,
-                              pred_repeat=pred_repeat, get_path=get_path, max_path_len=max_path_len)
+        s = gen_openie_sample(raw_tokens, pred, opt)
         if s[0]:
             useless_sent_count += 1
             continue
@@ -288,10 +300,10 @@ def read_instances_from_conll_csv(inst_file, max_sent_len, keep_case,
 
     if trimmed_sent_count > 0:
         print('[Warning] {} instances are trimmed to the max sentence length {}.'
-              .format(trimmed_sent_count, max_sent_len))
+              .format(trimmed_sent_count, opt.max_token_seq_len))
     if useless_sent_count > 0:
         print('[Warning] {} instances are useless under the max sentence length {}.'
-              .format(useless_sent_count, max_sent_len))
+              .format(useless_sent_count, opt.max_token_seq_len))
     return word_insts, pred_insts, pred_word_insts, pred_pos_insts,\
            pos_insts, path_insts, tag_insts
 
@@ -464,16 +476,12 @@ def main_openie(opt):
     # Training set
     train_word_insts, train_pred_idx_insts, train_pred_word_insts, train_pred_pos_insts,\
     train_pos_insts, train_path_insts, train_tag_insts = \
-        read_instances_from_conll_csv(opt.train_src, opt.max_word_seq_len, opt.keep_case,
-                                      get_pos=True, pred_repeat=True, get_path=True,
-                                      max_path_len=opt.max_path_len)
+        read_instances_from_conll_csv(opt.train_src, opt)
 
     # Validation set
     valid_word_insts, valid_pred_idx_insts, valid_pred_word_insts, valid_pred_pos_insts,\
     valid_pos_insts, valid_path_insts, valid_tag_insts = \
-        read_instances_from_conll_csv(opt.valid_src, opt.max_word_seq_len, opt.keep_case,
-                                      get_pos=True, pred_repeat=True, get_path=True,
-                                      max_path_len=opt.max_path_len)
+        read_instances_from_conll_csv(opt.valid_src, opt)
 
     ## Build vocab
     # Build word vocabulary
@@ -501,7 +509,7 @@ def main_openie(opt):
     path2idx, _ = build_path_vocab_idx(train_path_insts, 0, word2idx={
         Constants.PAD_WORD: Constants.PAD, Constants.UNK_WORD: Constants.UNK})
     print('[Info] PATH:')
-    print(sorted(path2idx.items(), key=lambda x: x[1]))
+    print(sorted(path2idx.items(), key=lambda x: x[1])[:100])
     opt.n_path = len(path2idx)
 
     # Build tag classes
@@ -611,6 +619,8 @@ if __name__ == '__main__':
     parser.add_argument('-vocab', default=None)
     parser.add_argument('-task', type=str, choices=['mt', 'openie', 'emb', 'emb_svd'], required=True)
     parser.add_argument('-pre_word_emb', type=str, default=None)
+    parser.add_argument('-max_path_len', type=int, default=1)
+    parser.add_argument('-path_comb_op', type=str, default='concat', choices=['concat', 'no'])
 
     opt = parser.parse_args()
 
@@ -620,7 +630,8 @@ if __name__ == '__main__':
         opt.get_pos = True
         opt.get_path = True
         opt.pred_repeat = True
-        opt.max_path_len = 1
+        print('[Info] max_path_len is {} with {}'.format(
+            opt.max_path_len, opt.path_comb_op))
         main_openie(opt)
     elif opt.task == 'emb':
         # python preprocess.py -task emb -pre_word_emb X [-vocab X] -save_data X
