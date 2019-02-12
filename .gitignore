@@ -173,4 +173,6 @@ ENV/
 
 ## --> custom
 data
+extractions
+models
 ## <-- custom
