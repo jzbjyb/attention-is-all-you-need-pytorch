@@ -4,10 +4,12 @@ import torch.nn as nn
 import numpy as np
 import transformer.Constants as Constants
 from transformer.Layers import EncoderLayer, DecoderLayer
+from torchsummary import summary
 
 __author__ = "Yu-Hsiang Huang"
 
 def count_parameters(model):
+    #print([(p.name, p.size(), p.numel()) for p in model.parameters() if p.requires_grad])
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 def get_non_pad_mask(seq):
@@ -167,9 +169,12 @@ class MultiInpEncoder(nn.Module):
             zip(n_cate_list, d_vec_list, pre_emb_list, self.inp_use_list) if use])
 
         # set embedding grad
-        emb_learnable_list = [el for el, use in zip(emb_learnable_list, self.inp_use_list)]
+        emb_learnable_list = [el for el, use in zip(emb_learnable_list, self.inp_use_list) if use]
         for i, emb in enumerate(self.word_emb_list):
             emb.weight.requires_grad = emb_learnable_list[i]
+
+        print('embedding and req_grad:\n{}'.format(
+            [(e, e.weight.requires_grad) for e in self.word_emb_list]))
 
         # build abs positional embedding
         self.position_enc = nn.Embedding.from_pretrained(

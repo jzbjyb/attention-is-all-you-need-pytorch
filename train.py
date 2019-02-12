@@ -254,7 +254,7 @@ def main():
         opt.n_class = data['settings'].n_class
         opt.n_pos = data['settings'].n_pos
         opt.n_rel_pos = data['settings'].n_path
-        opt.n_pred_ind = data['settings'].n_path
+        opt.n_pred_ind = data['settings'].n_pred_ind
     else:
         raise ValueError
 
