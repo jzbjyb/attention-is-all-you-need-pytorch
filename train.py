@@ -227,6 +227,8 @@ def main():
     parser.add_argument('-label_smoothing', action='store_true')
 
     parser.add_argument('-task', type=str, choices=['mt', 'openie'], default='mt')
+    parser.add_argument('-emb_op', type=str,
+                        choices=['sum', 'concat'], default='no')
     parser.add_argument('-rel_pos_emb_op', type=str,
                         choices=['no', 'lookup'], default='no')
 
@@ -301,7 +303,6 @@ def main():
         opt.n_cate_list = [opt.vocab_size, opt.n_pos, opt.n_pred_ind, opt.vocab_size, opt.n_pos]
         opt.emb_learnable_list = [False, True, True, False, True]
         opt.pre_emb_list = [word_emb, None, None, word_emb, None]
-        opt.emb_op = 'sum'
         transformer = TransformerTagger(
             opt.n_cate_list,
             opt.n_class,

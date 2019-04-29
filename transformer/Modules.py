@@ -36,15 +36,16 @@ class RelScaledDotProductAttention(nn.Module):
         self.dropout = nn.Dropout(attn_dropout)
         self.softmax = nn.Softmax(dim=2)
 
-    def forward(self, q, k, v, rel_pos, mask=None):
+    def forward(self, q, k, v, rel_pos, rel_pos_v=None, mask=None):
         nb, lq, dk = q.size()
         nb, lk, dk = k.size()
         nb, lq, lk, dk = rel_pos.size()
 
-        k = k.view(nb, 1, lk, dk)
-        k = k + rel_pos
+        #k = k.view(nb, 1, lk, dk)
+        #k = k + rel_pos
 
-        attn = torch.einsum('nqd,nqkd->nqk', q, k) # (n*b) x lq x lk
+        #attn = torch.einsum('nqd,nqkd->nqk', q, k) # (n*b) x lq x lk
+        attn = torch.bmm(q, k.transpose(1, 2))
         attn = attn / self.temperature
 
         if mask is not None:
@@ -52,6 +53,9 @@ class RelScaledDotProductAttention(nn.Module):
 
         attn = self.softmax(attn)
         attn = self.dropout(attn)
-        output = torch.bmm(attn, v)
+        if rel_pos_v is not None:
+            output = torch.einsum('nqk,nqkd->nqd', attn, rel_pos_v)
+        else:
+            output = torch.bmm(attn, v)
 
         return output, attn
