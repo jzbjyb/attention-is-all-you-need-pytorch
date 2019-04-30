@@ -1,5 +1,6 @@
 ''' Handling the data io '''
 import argparse
+from tqdm import tqdm
 import re
 import torch
 import transformer.Constants as Constants
@@ -267,14 +268,31 @@ def read_instances_from_conll_csv(inst_file, opt):
 
     df = pd.read_csv(inst_file, sep='\t', header=0, keep_default_na=False, quoting=3)
 
+    def get_sents_from_df(df):
+        dfv = df.values
+        col = df.columns.values.tolist()
+        ridx = col.index('run_id')
+        df_li = []
+        last_idx = 0
+        for i in tqdm(range(1, len(dfv))):
+            if dfv[i, ridx] != dfv[i - 1, ridx]:
+                sdf = pd.DataFrame(dfv[last_idx:i], columns=df.columns)
+                df_li.append(sdf)
+                last_idx = i
+        if len(dfv) > 0:
+            sdf = pd.DataFrame(dfv[last_idx:], columns=df.columns)
+            df_li.append(sdf)
+        return df_li
+
     # Split according to sentences
-    sents = [df[df.run_id == run_id] for run_id in sorted(set(df.run_id.values))]
+    #sents = [df[df.run_id == run_id] for run_id in sorted(set(df.run_id.values))]
+    sents = get_sents_from_df(df)
 
     word_insts, pred_insts, pred_word_insts, pred_pos_insts, \
     pos_insts, path_insts, tag_insts = [], [], [], [], [], [], []
     trimmed_sent_count = 0
     useless_sent_count = 0
-    for sent in sents:
+    for sent in tqdm(sents):
         # retrieve from csv
         raw_tokens = sent.word.values.tolist()
         pred = sent.head_pred_id.values[0]
