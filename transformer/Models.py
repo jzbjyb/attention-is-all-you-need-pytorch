@@ -4,6 +4,7 @@ import torch.nn as nn
 import numpy as np
 import transformer.Constants as Constants
 from transformer.Layers import EncoderLayer, DecoderLayer
+from transformer.Modules import LSTMRelPosEmb
 from torchsummary import summary
 
 __author__ = "Yu-Hsiang Huang"
@@ -188,6 +189,10 @@ class MultiInpEncoder(nn.Module):
         elif self.rel_pos_emb_op == 'lookup':
             rel_pos_op = 'external'
             self.rel_pos_emb = nn.Embedding(n_rel_pos, d_inp, padding_idx=Constants.PAD)
+        elif self.rel_pos_emb_op == 'lstm':
+            rel_pos_op = 'external'
+            rel_pos_emb = nn.Embedding(n_rel_pos, d_inp, padding_idx=Constants.PAD)
+            self.rel_pos_emb = LSTMRelPosEmb(rel_pos_emb, dropout=dropout, padding_idx=Constants.PAD)
         else:
             raise NotImplementedError
 
@@ -225,6 +230,8 @@ class MultiInpEncoder(nn.Module):
         elif self.rel_pos_emb_op == 'lookup':
             rel_pos_seq = self.rel_pos_emb(rel_pos_seq)
             rel_pos_seq = rel_pos_seq.mean(-2)
+        elif self.rel_pos_emb_op == 'lstm':
+            rel_pos_seq = self.rel_pos_emb(rel_pos_seq)
         else:
             raise NotImplementedError
 
