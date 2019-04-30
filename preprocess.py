@@ -251,6 +251,9 @@ def gen_openie_sample(tokens, pred, opt):
             raise ValueError
         for i in range(len(path_inst)):
             path_inst[i][i] = ['<self>']
+        if True:  # TODO: really useful?
+            # add predicate indicator
+            path_inst = [[[w + '.PRED' if c == pred else w for w in p] for c,p in enumerate(pp)] for pp in path_inst]
     # predicate
     if pred >= len(word_inst):
         useless = True

@@ -230,14 +230,15 @@ def main():
     parser.add_argument('-emb_op', type=str,
                         choices=['sum', 'concat'], default='no')
     parser.add_argument('-rel_pos_emb_op', type=str,
-                        choices=['no', 'lookup'], default='no')
+                        choices=['no', 'lookup', 'lstm'], default='no')
 
     opt = parser.parse_args()
     opt.cuda = not opt.no_cuda
 
     # seed
-    torch.manual_seed(2019)
-    np.random.seed(2019)
+    SEED = 2019
+    torch.manual_seed(SEED)
+    np.random.seed(SEED)
 
     #========= Loading Dataset =========#
     data = torch.load(opt.data)
@@ -366,7 +367,7 @@ def prepare_dataloaders_openie(data, opt):
             word_insts=data['train']['word'],
             path_insts=data['train']['path'],
             tag_insts=data['train']['tag']),
-        num_workers=2,
+        num_workers=4,
         batch_size=opt.batch_size,
         collate_fn=openie_paired_collate_fn,
         shuffle=True)
@@ -378,7 +379,7 @@ def prepare_dataloaders_openie(data, opt):
             word_insts=data['valid']['word'],
             path_insts=data['valid']['path'],
             tag_insts=data['valid']['tag']),
-        num_workers=2,
+        num_workers=4,
         batch_size=opt.batch_size,
         collate_fn=openie_paired_collate_fn)
     return train_loader, valid_loader
