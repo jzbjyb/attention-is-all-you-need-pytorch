@@ -173,6 +173,7 @@ ENV/
 
 ## --> custom
 data
+slurm_out
 extractions
 models
 ## <-- custom
